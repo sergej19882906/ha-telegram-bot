@@ -1,5 +1,6 @@
 """
 Telegram-бот для Home Assistant с интерактивным меню и локализацией.
+Поддержка Docker: данные сохраняются в /app/data (или DATA_DIR).
 """
 
 import asyncio
@@ -42,7 +43,7 @@ load_dotenv()
 
 
 def esc(text) -> str:
-    """Экранирует HTML-символы."""
+    """Экранирует HTML-символы для безопасной отправки в Telegram."""
     return html.escape(str(text)) if text is not None else ""
 
 
@@ -203,36 +204,48 @@ MESSAGES = {
     },
 }
 
-LANG_FILE = Path(__file__).parent / "user_langs.json"
+# Путь к файлу с языками пользователей
+# В Docker: /app/data/user_langs.json
+# Локально: ./user_langs.json
+DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent))
+LANG_FILE = DATA_DIR / "user_langs.json"
 DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "ru")
 
 
 def load_user_langs() -> dict:
+    """Загружает выбранные языки пользователей из файла."""
     if LANG_FILE.exists():
         try:
             return json.loads(LANG_FILE.read_text(encoding="utf-8"))
         except Exception as e:
-            logger.warning(f"Не удалось прочитать {LANG_FILE}: {e}")
+            logger.warning("Не удалось прочитать %s: %s", LANG_FILE, e)
     return {}
 
 
 def save_user_langs(langs: dict):
+    """Сохраняет выбранные языки пользователей в файл."""
     try:
-        LANG_FILE.write_text(json.dumps(langs, ensure_ascii=False, indent=2), encoding="utf-8")
+        LANG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LANG_FILE.write_text(
+            json.dumps(langs, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
     except Exception as e:
-        logger.warning(f"Не удалось записать {LANG_FILE}: {e}")
+        logger.warning("Не удалось записать %s: %s", LANG_FILE, e)
 
 
 USER_LANGS = load_user_langs()
 
 
 def get_lang(user_id: Optional[int]) -> str:
+    """Возвращает выбранный язык для пользователя."""
     if user_id is None:
         return DEFAULT_LANG
     return USER_LANGS.get(str(user_id), DEFAULT_LANG)
 
 
 def set_lang(user_id: int, lang: str):
+    """Устанавливает язык для пользователя."""
     if lang not in MESSAGES:
         return
     USER_LANGS[str(user_id)] = lang
@@ -240,6 +253,7 @@ def set_lang(user_id: int, lang: str):
 
 
 def t(user_id: Optional[int], key: str, **kwargs) -> str:
+    """Возвращает локализованную строку."""
     lang = get_lang(user_id)
     text = MESSAGES.get(lang, MESSAGES["ru"]).get(key, key)
     if kwargs:
@@ -251,6 +265,7 @@ def t(user_id: Optional[int], key: str, **kwargs) -> str:
 
 
 def state_localized(user_id: Optional[int], state: str, short: bool = False) -> str:
+    """Локализует стандартные состояния HA (on/off/unavailable)."""
     if state == "on":
         return t(user_id, "state_on_short" if short else "state_on")
     if state == "off":
@@ -263,11 +278,13 @@ def state_localized(user_id: Optional[int], state: str, short: bool = False) -> 
 # ---------- HA Client ----------
 
 class HAError(Exception):
+    """Ошибка при работе с Home Assistant."""
     pass
 
 
 class HAClient:
-    """Клиент для работы с Home Assistant API."""
+    """Асинхронный клиент для работы с Home Assistant REST API."""
+
     def __init__(self, base_url: str, token: str, timeout: float = 15.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -279,9 +296,11 @@ class HAClient:
         )
 
     async def close(self):
+        """Закрывает HTTP-клиент."""
         await self.client.aclose()
 
     async def get_json(self, path: str, params: Optional[dict] = None):
+        """Выполняет GET-запрос и возвращает JSON."""
         r = await self.client.get(path, params=params)
         if r.status_code == 401:
             raise HAError("Invalid HA access token.")
@@ -289,6 +308,7 @@ class HAClient:
         return r.json()
 
     async def post_json(self, path: str, body: dict):
+        """Выполняет POST-запрос и возвращает JSON."""
         r = await self.client.post(path, json=body, timeout=self.timeout)
         if r.status_code == 401:
             raise HAError("Invalid HA access token.")
@@ -296,6 +316,7 @@ class HAClient:
         return r.json()
 
     async def healthcheck(self) -> bool:
+        """Проверяет доступность Home Assistant."""
         try:
             r = await self.client.get("/api/", timeout=self.timeout)
             return r.status_code == 200
@@ -303,26 +324,38 @@ class HAClient:
             return False
 
     async def get_entity(self, entity_id: str) -> dict:
+        """Получает состояние одного устройства."""
         return await self.get_json(f"/api/states/{entity_id}")
 
     async def get_entities(self, domain: Optional[str] = None) -> list:
+        """Получает список всех устройств (опционально по домену)."""
         params = {"domain": domain} if domain else {}
         data = await self.get_json("/api/states", params=params)
         return data if isinstance(data, list) else data.get("entities", [])
 
     async def get_entity_ids_by_domain(self, domain: Optional[str] = None) -> dict:
+        """Возвращает словарь {entity_id: entity_data}."""
         entities = await self.get_entities(domain=domain)
         return {e["entity_id"]: e for e in entities if "entity_id" in e}
 
     async def turn_on(self, entity_id: str, **kwargs):
+        """Включает устройство."""
         domain, _, _ = entity_id.rpartition(".")
-        return await self.post_json(f"/api/services/{domain}/turn_on", {"entity_id": entity_id, **kwargs})
+        return await self.post_json(
+            f"/api/services/{domain}/turn_on",
+            {"entity_id": entity_id, **kwargs}
+        )
 
     async def turn_off(self, entity_id: str, **kwargs):
+        """Выключает устройство."""
         domain, _, _ = entity_id.rpartition(".")
-        return await self.post_json(f"/api/services/{domain}/turn_off", {"entity_id": entity_id, **kwargs})
+        return await self.post_json(
+            f"/api/services/{domain}/turn_off",
+            {"entity_id": entity_id, **kwargs}
+        )
 
     async def set_value(self, entity_id: str, value: float, **kwargs):
+        """Устанавливает значение (яркость, температура и т.д.)."""
         domain, _, _ = entity_id.rpartition(".")
         service_map = {
             "light": ("set_brightness", "brightness"),
@@ -331,20 +364,29 @@ class HAClient:
         if domain not in service_map:
             raise HAError(f"Unsupported entity type for set: {domain}")
         svc, key = service_map[domain]
-        return await self.post_json(f"/api/services/{domain}/{svc}", {"entity_id": entity_id, **{key: value}})
+        return await self.post_json(
+            f"/api/services/{domain}/{svc}",
+            {"entity_id": entity_id, **{key: value}}
+        )
 
     async def apply_scene(self, scene_id: str):
-        return await self.post_json("/api/services/scene/turn_on", {"entity_id": scene_id})
+        """Активирует сцену."""
+        return await self.post_json(
+            "/api/services/scene/turn_on",
+            {"entity_id": scene_id}
+        )
 
 
 class EntityRegistry:
-    """Реестр устройств Home Assistant."""
+    """Реестр устройств Home Assistant с алиасами и комнатами."""
+
     def __init__(self, ha: HAClient):
         self.ha = ha
         self._entities: dict = {}
         self._aliases: dict = {}
 
     async def refresh(self):
+        """Обновляет список устройств из Home Assistant."""
         states = await self.ha.get_entity_ids_by_domain()
         self._entities = states
 
@@ -357,6 +399,7 @@ class EntityRegistry:
                     self._aliases[alias] = eid
 
     def by_id_or_alias(self, text: str) -> Optional[str]:
+        """Ищет устройство по entity_id или алиасу."""
         if not text:
             return None
         t = text.strip()
@@ -365,37 +408,49 @@ class EntityRegistry:
         return self._aliases.get(t.lower())
 
     def list_entities(self, domain: Optional[str] = None) -> list:
+        """Возвращает список entity_id (опционально по домену)."""
         if not domain:
             return sorted(list(self._entities.keys()))
         return sorted([k for k in self._entities if k.split(".")[0] == domain])
 
     def get_rooms(self) -> list:
-        """Получает список комнат из атрибутов устройств."""
+        """Получает список комнат из атрибутов устройств.
+
+        Ищет в атрибутах: room_name, area, area_name, location.
+        Корректно обрабатывает случаи, когда значение — список.
+        """
         rooms = set()
         for data in self._entities.values():
             attrs = data.get("attributes", {})
-            # Ищем различные возможные атрибуты комнаты
-            for key in ["room_name", "area", "area_name", "location"]:
+            for key in ("room_name", "area", "area_name", "location"):
                 room = attrs.get(key)
-                if room and isinstance(room, str):
-                    rooms.add(room)
+                if room is None:
+                    continue
+                # Если значение — список, берём первый элемент
+                if isinstance(room, list):
+                    if room and isinstance(room[0], str):
+                        rooms.add(room[0])
                     break
-                elif room and isinstance(room, list) and room and isinstance(room[0], str):
-                    rooms.add(room[0])
+                # Если значение — строка
+                if isinstance(room, str) and room.strip():
+                    rooms.add(room)
                     break
         return sorted(list(rooms))
 
     def get_scenes(self) -> list:
+        """Возвращает список всех сцен."""
         return sorted([eid for eid in self._entities if eid.startswith("scene.")])
 
     def get_friendly_name(self, eid: str) -> str:
+        """Возвращает человеко-читаемое имя устройства."""
         data = self._entities.get(eid, {})
         return data.get("attributes", {}).get("friendly_name", eid)
 
 
-# ---------- Главное меню ----------
+# ---------- Главное меню (кнопки внизу чата) ----------
 
 def get_main_keyboard(uid: Optional[int]) -> ReplyKeyboardMarkup:
+    """Создаёт клавиатуру главного меню."""
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(t(uid, "btn_control")), KeyboardButton(t(uid, "btn_status"))],
@@ -409,7 +464,8 @@ def get_main_keyboard(uid: Optional[int]) -> ReplyKeyboardMarkup:
 # ---------- Bot ----------
 
 class HATelegramBot:
-    """Основной класс Telegram-бота."""
+    """Основной класс Telegram-бота для Home Assistant."""
+
     def __init__(self, cfg, allowed_user_id: Optional[int]):
         self.cfg = cfg
         self.allowed_user_id = allowed_user_id
@@ -419,15 +475,18 @@ class HATelegramBot:
         self.app = None
 
     def _check_auth(self, update: Update) -> bool:
+        """Проверяет, разрешён ли доступ пользователю."""
         user_id = update.effective_user.id if update.effective_user else None
         if self.allowed_user_id is not None and user_id != self.allowed_user_id:
             return False
         return True
 
     def _uid(self, update: Update) -> Optional[int]:
+        """Возвращает Telegram ID пользователя."""
         return update.effective_user.id if update.effective_user else None
 
     async def _reply_text(self, update: Update, text: str, parse_mode: Optional[str] = None, **kwargs):
+        """Отправляет сообщение, автоматически разбивая длинные тексты."""
         max_length = 4096
         if len(text) <= max_length:
             try:
@@ -435,7 +494,7 @@ class HATelegramBot:
                     text, parse_mode=parse_mode, disable_web_page_preview=True, **kwargs
                 )
             except Exception as e:
-                logger.warning(f"Ошибка отправки: {e}")
+                logger.warning("Ошибка отправки: %s", e)
                 return None
 
         parts = self._split_message(text, max_length)
@@ -448,10 +507,11 @@ class HATelegramBot:
                 if i < len(parts):
                     await asyncio.sleep(0.5)
             except Exception as e:
-                logger.warning(f"Ошибка отправки части {i}: {e}")
+                logger.warning("Ошибка отправки части %d: %s", i, e)
         return result
 
     def _split_message(self, text: str, max_length: int) -> list:
+        """Разбивает сообщение на части по строкам."""
         lines = text.split('\n')
         parts = []
         current_part = []
@@ -469,14 +529,16 @@ class HATelegramBot:
         return parts
 
     async def _get_state(self, eid: str) -> Optional[dict]:
+        """Получает состояние устройства."""
         try:
             return await self.ha.get_entity(eid)
         except Exception as e:
-            logger.error(f"Ошибка получения состояния {eid}: {e}")
+            logger.error("Ошибка получения состояния %s: %s", eid, e)
             return None
 
     # ---------- Команды ----------
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /start."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -487,6 +549,7 @@ class HATelegramBot:
         )
 
     async def cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /menu."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -499,6 +562,7 @@ class HATelegramBot:
         )
 
     async def cmd_hide(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /hide — скрывает кнопки меню."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -509,12 +573,14 @@ class HATelegramBot:
         )
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /help."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
         await self._reply_text(update, t(uid, "help_text"), "HTML")
 
     async def cmd_lang(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /lang — выбор языка."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -528,6 +594,7 @@ class HATelegramBot:
 
     # ---------- Команды управления ----------
     async def cmd_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /on."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -545,6 +612,7 @@ class HATelegramBot:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
     async def cmd_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /off."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -562,6 +630,7 @@ class HATelegramBot:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
     async def cmd_toggle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /toggle."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -583,6 +652,7 @@ class HATelegramBot:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
     async def cmd_state(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /state."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -613,6 +683,7 @@ class HATelegramBot:
             return await self._reply_text(update, text, "HTML")
 
     async def cmd_room(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /room."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -622,6 +693,7 @@ class HATelegramBot:
         await self._show_room(update, uid, room_name)
 
     async def cmd_scene(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /scene."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -638,6 +710,7 @@ class HATelegramBot:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /status."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -645,6 +718,7 @@ class HATelegramBot:
         await self._reply_text(update, t(uid, "ha_online") if ok else t(uid, "ha_offline"))
 
     async def cmd_timer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /timer."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -669,14 +743,19 @@ class HATelegramBot:
                         parse_mode="HTML",
                     )
             except Exception as e:
-                logger.error(f"Ошибка таймера: {e}")
+                logger.error("Ошибка таймера: %s", e)
 
         task = asyncio.create_task(turn_off_later())
         self._timers[uid] = task
-        await self._reply_text(update, t(uid, "timer_started", eid=esc(eid), minutes=minutes), "HTML")
+        await self._reply_text(
+            update,
+            t(uid, "timer_started", eid=esc(eid), minutes=minutes),
+            "HTML",
+        )
 
     # ---------- Inline-меню ----------
     def _main_menu_inline(self, uid: Optional[int]) -> InlineKeyboardMarkup:
+        """Создаёт inline-клавиатуру главного меню."""
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(t(uid, "btn_control"), callback_data="menu_control"),
@@ -693,9 +772,11 @@ class HATelegramBot:
         ])
 
     def _back_to_main_button(self, uid: Optional[int]) -> list:
+        """Возвращает кнопку возврата в главное меню."""
         return [InlineKeyboardButton(t(uid, "btn_main_menu"), callback_data="menu_main")]
 
     async def _show_control_menu(self, update_or_query, uid: Optional[int]):
+        """Показывает меню управления устройствами."""
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(t(uid, "btn_on"), callback_data="ctrl_on"),
@@ -704,10 +785,10 @@ class HATelegramBot:
             [InlineKeyboardButton(t(uid, "btn_toggle"), callback_data="ctrl_toggle")],
             self._back_to_main_button(uid),
         ])
-        text = t(uid, "control_title")
-        await self._send_or_edit(update_or_query, text, "HTML", keyboard)
+        await self._send_or_edit(update_or_query, t(uid, "control_title"), "HTML", keyboard)
 
     async def _show_status_menu(self, update_or_query, uid: Optional[int]):
+        """Показывает меню статуса устройств."""
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(t(uid, "btn_all_devices"), callback_data="stat_all")],
             [
@@ -723,6 +804,7 @@ class HATelegramBot:
         await self._send_or_edit(update_or_query, t(uid, "status_title"), "HTML", keyboard)
 
     async def _show_rooms_menu(self, update_or_query, uid: Optional[int]):
+        """Показывает список комнат."""
         rooms = self.registry.get_rooms()
         if not rooms:
             await self._send_or_edit(
@@ -736,9 +818,15 @@ class HATelegramBot:
             cb_data = f"room:{room}"[:64]
             buttons.append([InlineKeyboardButton(f"🏠 {room}", callback_data=cb_data)])
         buttons.append(self._back_to_main_button(uid))
-        await self._send_or_edit(update_or_query, t(uid, "rooms_title"), "HTML", InlineKeyboardMarkup(buttons))
+        await self._send_or_edit(
+            update_or_query,
+            t(uid, "rooms_title"),
+            "HTML",
+            InlineKeyboardMarkup(buttons),
+        )
 
     async def _show_scenes_menu(self, update_or_query, uid: Optional[int]):
+        """Показывает список сцен."""
         scenes = self.registry.get_scenes()
         if not scenes:
             await self._send_or_edit(
@@ -753,9 +841,15 @@ class HATelegramBot:
             cb_data = f"sc:{scene_id}"[:64]
             buttons.append([InlineKeyboardButton(f"🎬 {fname}", callback_data=cb_data)])
         buttons.append(self._back_to_main_button(uid))
-        await self._send_or_edit(update_or_query, t(uid, "scenes_title"), "HTML", InlineKeyboardMarkup(buttons))
+        await self._send_or_edit(
+            update_or_query,
+            t(uid, "scenes_title"),
+            "HTML",
+            InlineKeyboardMarkup(buttons),
+        )
 
     async def _show_settings_menu(self, update_or_query, uid: Optional[int]):
+        """Показывает меню настроек."""
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(t(uid, "btn_lang"), callback_data="set_lang")],
             [InlineKeyboardButton(t(uid, "btn_ha_status"), callback_data="set_hastatus")],
@@ -763,7 +857,15 @@ class HATelegramBot:
         ])
         await self._send_or_edit(update_or_query, t(uid, "settings_title"), "HTML", keyboard)
 
-    async def _show_device_list(self, update_or_query, uid: Optional[int], action: str, action_key: str, domain: Optional[str] = None):
+    async def _show_device_list(
+        self,
+        update_or_query,
+        uid: Optional[int],
+        action: str,
+        action_key: str,
+        domain: Optional[str] = None,
+    ):
+        """Показывает список устройств для управления."""
         entities = self.registry.list_entities(domain)
         if not entities:
             await self._send_or_edit(
@@ -774,7 +876,10 @@ class HATelegramBot:
                 ]),
             )
             return
-        controllable = [e for e in entities if e.split(".")[0] in {"light", "switch", "fan", "cover"}]
+        controllable = [
+            e for e in entities
+            if e.split(".")[0] in {"light", "switch", "fan", "cover"}
+        ]
         if not controllable:
             controllable = entities
         buttons = []
@@ -787,6 +892,7 @@ class HATelegramBot:
         await self._send_or_edit(update_or_query, text, "HTML", InlineKeyboardMarkup(buttons))
 
     async def _show_room(self, update_or_query, uid: Optional[int], room_name: str):
+        """Показывает устройства в комнате."""
         entities = self.registry._entities
         lines = []
         buttons = []
@@ -815,13 +921,14 @@ class HATelegramBot:
         await self._send_or_edit(update_or_query, text, "HTML", kb)
 
     async def _send_or_edit(self, update_or_query, text: str, parse_mode: Optional[str] = None, reply_markup=None):
+        """Универсальный метод: редактирует или отправляет сообщение."""
         if hasattr(update_or_query, "data"):
             try:
                 await update_or_query.edit_message_text(
                     text, parse_mode=parse_mode, reply_markup=reply_markup, disable_web_page_preview=True
                 )
             except Exception as e:
-                logger.warning(f"Ошибка редактирования: {e}")
+                logger.warning("Ошибка редактирования: %s", e)
         else:
             update = update_or_query
             try:
@@ -829,10 +936,11 @@ class HATelegramBot:
                     text, parse_mode=parse_mode, reply_markup=reply_markup, disable_web_page_preview=True
                 )
             except Exception as e:
-                logger.warning(f"Ошибка отправки: {e}")
+                logger.warning("Ошибка отправки: %s", e)
 
     # ---------- Callback handler ----------
     async def callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает нажатия на inline-кнопки."""
         query = update.callback_query
         await query.answer()
         if not self._check_auth(update):
@@ -840,6 +948,7 @@ class HATelegramBot:
         uid = query.from_user.id
         data = query.data or ""
 
+        # Смена языка
         if data.startswith("lang_"):
             lang = data.split("_", 1)[1]
             if lang in MESSAGES:
@@ -852,6 +961,7 @@ class HATelegramBot:
                 )
             return
 
+        # Навигация по меню
         if data == "menu_main":
             await query.edit_message_text(
                 t(uid, "main_menu_title"),
@@ -869,7 +979,11 @@ class HATelegramBot:
         elif data == "menu_settings":
             await self._show_settings_menu(query, uid)
         elif data == "menu_help":
-            await query.edit_message_text(t(uid, "help_text"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]))
+            await query.edit_message_text(
+                t(uid, "help_text"),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+            )
         elif data == "ctrl_on":
             await self._show_device_list(query, uid, t(uid, "btn_on"), "on")
         elif data == "ctrl_off":
@@ -893,7 +1007,10 @@ class HATelegramBot:
         elif data == "set_hastatus":
             ok = await self.ha.healthcheck()
             text = t(uid, "ha_online") if ok else t(uid, "ha_offline")
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]))
+            await query.edit_message_text(
+                text,
+                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+            )
         elif ":" in data:
             action, _, eid = data.partition(":")
             if action == "on":
@@ -950,6 +1067,7 @@ class HATelegramBot:
                     await query.edit_message_text(t(uid, "error", err=esc(str(e))))
 
     async def _show_status_list(self, query, uid: Optional[int], domain: Optional[str]):
+        """Показывает список устройств с их состояниями."""
         entities = self.registry.list_entities(domain)
         if not entities:
             await query.edit_message_text(
@@ -980,8 +1098,9 @@ class HATelegramBot:
             ]),
         )
 
-    # ---------- Обработка текстовых кнопок ----------
+    # ---------- Обработка текстовых кнопок меню ----------
     async def on_menu_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает текстовые сообщения (кнопки меню и имена устройств)."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -1002,6 +1121,7 @@ class HATelegramBot:
         elif text in (ru_map["btn_help"], en_map["btn_help"]):
             await self._reply_text(update, t(uid, "help_text"), "HTML")
         else:
+            # Обычное текстовое сообщение — ищем устройство
             eid = self.registry.by_id_or_alias(text)
             if eid and eid.endswith((".light", ".switch", ".fan", ".cover", ".plug", ".scene")):
                 action = "on" if text.lower().endswith(("on", "вкл", "включить")) else "off"
@@ -1031,6 +1151,7 @@ class Config:
 
 
 def main():
+    """Точка входа: настройка и запуск бота."""
     cfg = Config(
         token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         base_url=os.environ.get("HA_BASE_URL", "http://localhost:8123"),
@@ -1046,9 +1167,9 @@ def main():
         logger.info("Бот запущен, загружаю список устройств...")
         try:
             await bot.registry.refresh()
-            logger.info(f"Загружено устройств: {len(bot.registry._entities)}")
+            logger.info("Загружено устройств: %d", len(bot.registry._entities))
         except Exception as e:
-            logger.error(f"Ошибка загрузки: {e}")
+            logger.error("Ошибка загрузки: %s", e)
 
         async def refresher():
             while True:
@@ -1056,7 +1177,7 @@ def main():
                 try:
                     await bot.registry.refresh()
                 except Exception as e:
-                    logger.error(f"Ошибка обновления: {e}")
+                    logger.error("Ошибка обновления: %s", e)
 
         application.create_task(refresher(), name="entity_refresh")
 

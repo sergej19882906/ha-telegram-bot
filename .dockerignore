@@ -1,0 +1,67 @@
+# Git
+.git
+.gitignore
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Локальные данные
+.env
+.env.local
+data/
+logs/
+user_langs.json
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Документация
+*.md
+LICENSE
+
+# Скрипты Windows
+*.bat
+*.ps1
+
+# Скрипты Linux
+*.sh
+
+# Временные файлы
+*.tmp
+*.log
+create_*.py
+fix_*.py
+nssm.exe
+nssm.zip
+
+# Тесты
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Прочее
+Project structure.txt

@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  ha-telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    container_name: ha-telegram-bot
+    
+    restart: unless-stopped
+    
+    env_file:
+      - .env
+    
+    environment:
+      - TZ=Europe/Moscow
+      - DEFAULT_LANG=ru
+      - DATA_DIR=/app/data
+    
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    
+    network_mode: host
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "com.centurylinklabs.watchtower.scope=ha-telegram-bot"
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    
+    restart: unless-stopped
+    
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    
+    environment:
+      - TZ=Europe/Moscow
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_REMOVE_VOLUMES=false
+      - WATCHTOWER_INCLUDE_RESTARTING=true
+      - WATCHTOWER_POLL_INTERVAL=3600
+      - WATCHTOWER_SCOPE=ha-telegram-bot
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_NOTIFICATIONS=shoutrrr
+      # Опционально: уведомления в Telegram (раскомментируйте и заполните)
+      # - WATCHTOWER_NOTIFICATION_URL=telegram://TOKEN@telegram?channels=CHAT_ID
+    
+    # Проверка обновлений каждый час (3600 секунд)
+    # Измените на 86400 для проверки раз в сутки
+    command: --interval 3600 --cleanup --scope ha-telegram-bot
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    
+    labels:
+      - "com.centurylinklabs.watchtower.scope=ha-telegram-bot"
