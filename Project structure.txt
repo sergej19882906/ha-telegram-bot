@@ -1,0 +1,4 @@
+ha-bot/
+├── bot.py
+├── requirements.txt
+└── .env.example
