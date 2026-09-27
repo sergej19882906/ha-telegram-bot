@@ -267,6 +267,7 @@ class HAError(Exception):
 
 
 class HAClient:
+    """Клиент для работы с Home Assistant API."""
     def __init__(self, base_url: str, token: str, timeout: float = 15.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -337,6 +338,7 @@ class HAClient:
 
 
 class EntityRegistry:
+    """Реестр устройств Home Assistant."""
     def __init__(self, ha: HAClient):
         self.ha = ha
         self._entities: dict = {}
@@ -345,7 +347,7 @@ class EntityRegistry:
     async def refresh(self):
         states = await self.ha.get_entity_ids_by_domain()
         self._entities = states
-        
+
         for eid, data in self._entities.items():
             attrs = data.get("attributes", {})
             fname = attrs.get("friendly_name")
@@ -407,6 +409,7 @@ def get_main_keyboard(uid: Optional[int]) -> ReplyKeyboardMarkup:
 # ---------- Bot ----------
 
 class HATelegramBot:
+    """Основной класс Telegram-бота."""
     def __init__(self, cfg, allowed_user_id: Optional[int]):
         self.cfg = cfg
         self.allowed_user_id = allowed_user_id
@@ -425,8 +428,8 @@ class HATelegramBot:
         return update.effective_user.id if update.effective_user else None
 
     async def _reply_text(self, update: Update, text: str, parse_mode: Optional[str] = None, **kwargs):
-        MAX_LENGTH = 4096
-        if len(text) <= MAX_LENGTH:
+        max_length = 4096
+        if len(text) <= max_length:
             try:
                 return await update.effective_message.reply_text(
                     text, parse_mode=parse_mode, disable_web_page_preview=True, **kwargs
@@ -435,7 +438,7 @@ class HATelegramBot:
                 logger.warning(f"Ошибка отправки: {e}")
                 return None
 
-        parts = self._split_message(text, MAX_LENGTH)
+        parts = self._split_message(text, max_length)
         result = None
         for i, part in enumerate(parts, 1):
             try:
@@ -1019,6 +1022,7 @@ class HATelegramBot:
 
 @dataclass
 class Config:
+    """Конфигурация бота."""
     token: Optional[str] = None
     base_url: str = "http://localhost:8123"
     ha_token: Optional[str] = None
