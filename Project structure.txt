@@ -1,4 +1,12 @@
-ha-bot/
+E:\PR\ha-telegram-bot\
 ├── bot.py
+├── .env                    ← ваши токены
+├── .env.example
 ├── requirements.txt
-└── .env.example
+├── user_langs.json         ← создаётся автоматически
+├── logs\                   ← создаётся автоматически
+├── venv\                   ← виртуальное окружение
+├── install.bat             ← запустить один раз
+├── start.bat               ← запуск бота
+├── start_log.bat           ← запуск с логами
+└── stop.bat                ← остановка (опционально)
