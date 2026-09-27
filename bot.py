@@ -1,5 +1,5 @@
 """
-Telegram-бот для Home Assistant с интерактивным меню.
+Telegram-бот для Home Assistant с интерактивным меню и локализацией.
 """
 
 import asyncio
@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -41,6 +42,7 @@ load_dotenv()
 
 
 def esc(text) -> str:
+    """Экранирует HTML-символы."""
     return html.escape(str(text)) if text is not None else ""
 
 
@@ -299,8 +301,6 @@ class HAClient:
         except Exception:
             return False
 
-
-
     async def get_entity(self, entity_id: str) -> dict:
         return await self.get_json(f"/api/states/{entity_id}")
 
@@ -341,13 +341,11 @@ class EntityRegistry:
         self.ha = ha
         self._entities: dict = {}
         self._aliases: dict = {}
-        self._areas: dict = {}  # area_id -> area_name
 
     async def refresh(self):
         states = await self.ha.get_entity_ids_by_domain()
         self._entities = states
         
-        # Создаём алиасы из friendly_name
         for eid, data in self._entities.items():
             attrs = data.get("attributes", {})
             fname = attrs.get("friendly_name")
@@ -370,32 +368,19 @@ class EntityRegistry:
         return sorted([k for k in self._entities if k.split(".")[0] == domain])
 
     def get_rooms(self) -> list:
-        """Получает список комнат из area registry и атрибутов устройств."""
+        """Получает список комнат из атрибутов устройств."""
         rooms = set()
-        
-        # Сначала пробуем получить из _areas (если загружено через WebSocket)
-        if hasattr(self, '_areas') and self._areas:
-            for area_id, area_name in self._areas.items():
-                if area_name and isinstance(area_name, str):
-                    rooms.add(area_name)
-        
-        # Если areas не загружены, пробуем найти в атрибутах устройств
-        if not rooms:
-            for data in self._entities.values():
-                attrs = data.get("attributes", {})
-                # Ищем различные возможные атрибуты комнаты
-                for key in ["room_name", "area", "area_name", "location"]:
-                    room = attrs.get(key)
-                    if room:
-                        # Проверяем тип - должно быть строкой
-                        if isinstance(room, str):
-                            rooms.add(room)
-                        elif isinstance(room, list) and len(room) > 0:
-                            # Если это список, берём первый элемент
-                            if isinstance(room[0], str):
-                                rooms.add(room[0])
-                        break  # Нашли комнату, переходим к следующему устройству
-        
+        for data in self._entities.values():
+            attrs = data.get("attributes", {})
+            # Ищем различные возможные атрибуты комнаты
+            for key in ["room_name", "area", "area_name", "location"]:
+                room = attrs.get(key)
+                if room and isinstance(room, str):
+                    rooms.add(room)
+                    break
+                elif room and isinstance(room, list) and room and isinstance(room[0], str):
+                    rooms.add(room[0])
+                    break
         return sorted(list(rooms))
 
     def get_scenes(self) -> list:
@@ -406,7 +391,7 @@ class EntityRegistry:
         return data.get("attributes", {}).get("friendly_name", eid)
 
 
-# ---------- Главное меню (кнопки внизу чата) ----------
+# ---------- Главное меню ----------
 
 def get_main_keyboard(uid: Optional[int]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -552,7 +537,7 @@ class HATelegramBot:
         try:
             await self.ha.turn_on(eid)
             fname = self.registry.get_friendly_name(eid)
-            await self._reply_text(update, t(uid, "turned_on", name=esc(fname)))
+            await self._reply_text(update, t(uid, "turned_on", name=esc(fname)), "HTML")
         except Exception as e:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
@@ -569,7 +554,7 @@ class HATelegramBot:
         try:
             await self.ha.turn_off(eid)
             fname = self.registry.get_friendly_name(eid)
-            await self._reply_text(update, t(uid, "turned_off", name=esc(fname)))
+            await self._reply_text(update, t(uid, "turned_off", name=esc(fname)), "HTML")
         except Exception as e:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
@@ -590,7 +575,7 @@ class HATelegramBot:
             else:
                 await self.ha.turn_off(eid)
             fname = self.registry.get_friendly_name(eid)
-            await self._reply_text(update, t(uid, "toggled", name=esc(fname)))
+            await self._reply_text(update, t(uid, "toggled", name=esc(fname)), "HTML")
         except Exception as e:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
@@ -645,7 +630,7 @@ class HATelegramBot:
             return await self._reply_text(update, t(uid, "scene_not_found", name=esc(name)))
         try:
             await self.ha.apply_scene(eid)
-            await self._reply_text(update, t(uid, "scene_applied", name=esc(name)))
+            await self._reply_text(update, t(uid, "scene_applied", name=esc(name)), "HTML")
         except HAError as e:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
@@ -717,9 +702,6 @@ class HATelegramBot:
             self._back_to_main_button(uid),
         ])
         text = t(uid, "control_title")
-        if isinstance(update_or_query, CallbackQueryHandler):
-            pass
-        # Универсальный способ — редактирование или отправка
         await self._send_or_edit(update_or_query, text, "HTML", keyboard)
 
     async def _show_status_menu(self, update_or_query, uid: Optional[int]):
@@ -748,7 +730,6 @@ class HATelegramBot:
             return
         buttons = []
         for room in rooms:
-            # callback_data ограничен 64 байтами
             cb_data = f"room:{room}"[:64]
             buttons.append([InlineKeyboardButton(f"🏠 {room}", callback_data=cb_data)])
         buttons.append(self._back_to_main_button(uid))
@@ -790,36 +771,32 @@ class HATelegramBot:
                 ]),
             )
             return
-        # Фильтруем только управляемые устройства
         controllable = [e for e in entities if e.split(".")[0] in {"light", "switch", "fan", "cover"}]
         if not controllable:
             controllable = entities
         buttons = []
         for eid in controllable:
             fname = self.registry.get_friendly_name(eid)
-            # cb_data: "on:light.kitchen" или "off:..."
             cb_data = f"{action_key}:{eid}"[:64]
             buttons.append([InlineKeyboardButton(fname, callback_data=cb_data)])
         buttons.append([InlineKeyboardButton(t(uid, "btn_back"), callback_data="menu_control")])
         text = t(uid, "select_device", action=action)
         await self._send_or_edit(update_or_query, text, "HTML", InlineKeyboardMarkup(buttons))
 
-    async def _show_room_devices(self, update_or_query, uid: Optional[int], room_name: str):
-        await self._show_room(update_or_query, uid, room_name, as_query=True)
-
-    async def _show_room(self, update_or_query, uid: Optional[int], room_name: str, as_query: bool = False):
+    async def _show_room(self, update_or_query, uid: Optional[int], room_name: str):
         entities = self.registry._entities
         lines = []
         buttons = []
         for eid, data in entities.items():
             attrs = data.get("attributes", {})
             room = attrs.get("room_name", "") or attrs.get("area", "")
-            if room_name.lower() in room.lower():
+            if isinstance(room, list) and room:
+                room = room[0]
+            if room_name.lower() in str(room).lower():
                 state = data.get("state")
                 state_l = state_localized(uid, state, short=True)
                 fname = attrs.get("friendly_name", eid)
                 lines.append(f"<b>{esc(fname)}</b> — <code>{esc(state_l)}</code>")
-                # Кнопки управления для каждого устройства
                 if eid.split(".")[0] in {"light", "switch", "fan", "cover"}:
                     buttons.append([
                         InlineKeyboardButton(f"✅ {fname}", callback_data=f"on:{eid}"[:64]),
@@ -835,10 +812,7 @@ class HATelegramBot:
         await self._send_or_edit(update_or_query, text, "HTML", kb)
 
     async def _send_or_edit(self, update_or_query, text: str, parse_mode: Optional[str] = None, reply_markup=None):
-        """Универсальный метод: редактирует сообщение если это callback, иначе отправляет новое."""
-        # update_or_query может быть Update или CallbackQuery
         if hasattr(update_or_query, "data"):
-            # Это CallbackQuery
             try:
                 await update_or_query.edit_message_text(
                     text, parse_mode=parse_mode, reply_markup=reply_markup, disable_web_page_preview=True
@@ -846,7 +820,6 @@ class HATelegramBot:
             except Exception as e:
                 logger.warning(f"Ошибка редактирования: {e}")
         else:
-            # Это Update
             update = update_or_query
             try:
                 await update.effective_message.reply_text(
@@ -864,13 +837,11 @@ class HATelegramBot:
         uid = query.from_user.id
         data = query.data or ""
 
-        # Смена языка
         if data.startswith("lang_"):
             lang = data.split("_", 1)[1]
             if lang in MESSAGES:
                 set_lang(uid, lang)
                 await query.edit_message_text(t(uid, "lang_set"))
-                # Обновляем главное меню
                 await query.message.reply_text(
                     t(uid, "main_menu_title"),
                     parse_mode="HTML",
@@ -878,7 +849,6 @@ class HATelegramBot:
                 )
             return
 
-        # Навигация по меню
         if data == "menu_main":
             await query.edit_message_text(
                 t(uid, "main_menu_title"),
@@ -897,23 +867,17 @@ class HATelegramBot:
             await self._show_settings_menu(query, uid)
         elif data == "menu_help":
             await query.edit_message_text(t(uid, "help_text"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]))
-
-        # Подменю управления — выбор действия
         elif data == "ctrl_on":
             await self._show_device_list(query, uid, t(uid, "btn_on"), "on")
         elif data == "ctrl_off":
             await self._show_device_list(query, uid, t(uid, "btn_off"), "off")
         elif data == "ctrl_toggle":
             await self._show_device_list(query, uid, t(uid, "btn_toggle"), "tg")
-
-        # Статус по типу
         elif data == "stat_all":
             await self._show_status_list(query, uid, None)
         elif data.startswith("stat_"):
             domain = data.split("_", 1)[1]
             await self._show_status_list(query, uid, domain)
-
-        # Настройки
         elif data == "set_lang":
             keyboard = InlineKeyboardMarkup([
                 [
@@ -927,8 +891,6 @@ class HATelegramBot:
             ok = await self.ha.healthcheck()
             text = t(uid, "ha_online") if ok else t(uid, "ha_offline")
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]))
-
-        # Действие с устройством: "on:light.kitchen", "off:...", "tg:..."
         elif ":" in data:
             action, _, eid = data.partition(":")
             if action == "on":
@@ -970,7 +932,7 @@ class HATelegramBot:
                     await query.edit_message_text(t(uid, "error", err=esc(str(e))))
             elif data.startswith("room:"):
                 room_name = data[5:]
-                await self._show_room_devices(query, uid, room_name)
+                await self._show_room(query, uid, room_name)
             elif data.startswith("sc:"):
                 scene_id = data[3:]
                 try:
@@ -1005,7 +967,6 @@ class HATelegramBot:
         title_key = "all_devices_title" if domain is None else "devices_of_type_title"
         title = t(uid, title_key, domain=esc(domain)) if domain else t(uid, title_key)
         text = title + "\n\n" + "\n".join(lines)
-        # Разбиваем если длинно
         if len(text) > 4000:
             text = text[:4000] + "\n\n..."
         await query.edit_message_text(
@@ -1016,15 +977,12 @@ class HATelegramBot:
             ]),
         )
 
-    # ---------- Обработка текстовых кнопок меню ----------
+    # ---------- Обработка текстовых кнопок ----------
     async def on_menu_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
         uid = self._uid(update)
         text = update.message.text
-        lang = get_lang(uid)
-
-        # Сопоставление текста кнопок с действиями
         ru_map = MESSAGES["ru"]
         en_map = MESSAGES["en"]
 
@@ -1041,7 +999,6 @@ class HATelegramBot:
         elif text in (ru_map["btn_help"], en_map["btn_help"]):
             await self._reply_text(update, t(uid, "help_text"), "HTML")
         else:
-            # Обычное текстовое сообщение — ищем устройство
             eid = self.registry.by_id_or_alias(text)
             if eid and eid.endswith((".light", ".switch", ".fan", ".cover", ".plug", ".scene")):
                 action = "on" if text.lower().endswith(("on", "вкл", "включить")) else "off"
@@ -1060,17 +1017,16 @@ class HATelegramBot:
 
 # ---------- Main ----------
 
+@dataclass
+class Config:
+    token: Optional[str] = None
+    base_url: str = "http://localhost:8123"
+    ha_token: Optional[str] = None
+    allowed_user_id: Optional[int] = None
+    timeout: int = 15
+
+
 def main():
-    from dataclasses import dataclass
-
-    @dataclass
-    class Config:
-        token: Optional[str] = None
-        base_url: str = "http://localhost:8123"
-        ha_token: Optional[str] = None
-        allowed_user_id: Optional[int] = None
-        timeout: int = 15
-
     cfg = Config(
         token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         base_url=os.environ.get("HA_BASE_URL", "http://localhost:8123"),
@@ -1113,7 +1069,6 @@ def main():
         .build()
     )
 
-    # Команды
     app.add_handler(CommandHandler("start", bot.cmd_start))
     app.add_handler(CommandHandler("menu", bot.cmd_menu))
     app.add_handler(CommandHandler("hide", bot.cmd_hide))
@@ -1127,11 +1082,7 @@ def main():
     app.add_handler(CommandHandler("scene", bot.cmd_scene))
     app.add_handler(CommandHandler("status", bot.cmd_status))
     app.add_handler(CommandHandler("timer", bot.cmd_timer))
-
-    # Inline-кнопки
     app.add_handler(CallbackQueryHandler(bot.callback_handler))
-
-    # Текстовые кнопки меню + обычные сообщения
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.on_menu_text))
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)
