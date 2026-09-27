@@ -185,7 +185,6 @@ MESSAGES = {
     },
 }
 
-# Файл для хранения выбора языка пользователей
 LANG_FILE = Path(__file__).parent / "user_langs.json"
 DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "ru")
 
@@ -399,12 +398,61 @@ class HATelegramBot:
         return update.effective_user.id if update.effective_user else None
 
     async def _reply_text(self, update: Update, text: str, parse_mode: Optional[str] = None, **kwargs):
-        try:
-            return await update.effective_message.reply_text(
-                text, parse_mode=parse_mode, disable_web_page_preview=True, **kwargs
-            )
-        except Exception as e:
-            logger.warning(f"Ошибка отправки сообщения: {e}")
+        """Отправляет сообщение, автоматически разбивая его на части если оно слишком длинное."""
+        MAX_LENGTH = 4096
+        
+        # Если сообщение короткое, отправляем как есть
+        if len(text) <= MAX_LENGTH:
+            try:
+                return await update.effective_message.reply_text(
+                    text, parse_mode=parse_mode, disable_web_page_preview=True, **kwargs
+                )
+            except Exception as e:
+                logger.warning(f"Ошибка отправки сообщения: {e}")
+                return None
+        
+        # Разбиваем длинное сообщение на части
+        parts = self._split_message(text, MAX_LENGTH)
+        logger.info(f"Сообщение разбито на {len(parts)} частей")
+        
+        for i, part in enumerate(parts, 1):
+            try:
+                await update.effective_message.reply_text(
+                    part, parse_mode=parse_mode, disable_web_page_preview=True, **kwargs
+                )
+                # Небольшая задержка между частями, чтобы не спамить API
+                if i < len(parts):
+                    await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"Ошибка отправки части {i}: {e}")
+        
+        return None
+
+    def _split_message(self, text: str, max_length: int) -> list:
+        """Разбивает сообщение на части по строкам, не разрывая HTML-теги."""
+        lines = text.split('\n')
+        parts = []
+        current_part = []
+        current_length = 0
+        
+        for line in lines:
+            line_length = len(line) + 1  # +1 для \n
+            
+            if current_length + line_length > max_length:
+                # Текущая часть заполнена, сохраняем её
+                if current_part:
+                    parts.append('\n'.join(current_part))
+                    current_part = []
+                    current_length = 0
+            
+            current_part.append(line)
+            current_length += line_length
+        
+        # Добавляем последнюю часть
+        if current_part:
+            parts.append('\n'.join(current_part))
+        
+        return parts
 
     async def _get_state(self, eid: str) -> Optional[dict]:
         try:
@@ -471,7 +519,6 @@ class HATelegramBot:
             lang = data.split("_", 1)[1]
             if lang in MESSAGES:
                 set_lang(query.from_user.id, lang)
-                # Отвечаем на том же языке, который только что выбрали
                 await query.edit_message_text(t(query.from_user.id, "lang_set"))
 
     async def cmd_state(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -502,8 +549,6 @@ class HATelegramBot:
                 state_l = state_localized(uid, state, short=True)
                 lines.append(f"<b>{esc(a.get('friendly_name', k))}</b> — <code>{esc(state_l)}</code>")
             text = "\n".join(lines)
-            if len(text) > 3000:
-                text = text[:3000] + f"\n\n<i>{t(uid, 'list_truncated')}</i>"
             return await self._reply_text(update, text, "HTML")
 
     async def cmd_entities(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -673,9 +718,6 @@ class HATelegramBot:
         if not eid:
             return await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
 
-        # Запоминаем язык пользователя, чтобы таймер сработал на его языке
-        user_lang = get_lang(uid)
-
         async def turn_off_later():
             await asyncio.sleep(minutes * 60)
             try:
@@ -767,7 +809,6 @@ def main():
     app.add_handler(CommandHandler("toggle", bot.cmd_toggle))
     app.add_handler(CommandHandler("set", bot.cmd_set))
     app.add_handler(CommandHandler("timer", bot.cmd_timer))
-    # Обработчик нажатий на кнопки выбора языка
     app.add_handler(CallbackQueryHandler(bot.callback_lang, pattern=r"^lang_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.on_message))
 
