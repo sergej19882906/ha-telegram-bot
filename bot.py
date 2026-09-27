@@ -299,33 +299,7 @@ class HAClient:
         except Exception:
             return False
 
-    async def get_area_registry(self) -> dict:
-        """Получает реестр комнат (areas) из Home Assistant."""
-        try:
-            data = await self.get_json("/api/config/area_registry")
-            # Возвращает список: [{"area_id": "living_room", "name": "Гостиная"}, ...]
-            if isinstance(data, list):
-                return {area["area_id"]: area["name"] for area in data if "area_id" in area and "name" in area}
-            return {}
-        except Exception as e:
-            logger.warning(f"Не удалось получить area registry: {e}")
-            return {}
 
-    async def get_entity_registry(self) -> dict:
-        """Получает реестр объектов (entities) с привязкой к комнатам."""
-        try:
-            data = await self.get_json("/api/config/entity_registry")
-            # Возвращает список объектов с их area_id
-            if isinstance(data, list):
-                return {
-                    entity["entity_id"]: entity.get("area_id")
-                    for entity in data
-                    if "entity_id" in entity
-                }
-            return {}
-        except Exception as e:
-            logger.warning(f"Не удалось получить entity registry: {e}")
-            return {}
 
     async def get_entity(self, entity_id: str) -> dict:
         return await self.get_json(f"/api/states/{entity_id}")
@@ -373,28 +347,6 @@ class EntityRegistry:
         states = await self.ha.get_entity_ids_by_domain()
         self._entities = states
         
-        # Загружаем area registry (комнаты)
-        try:
-            self._areas = await self.ha.get_area_registry()
-        except Exception as e:
-            logger.warning(f"Не удалось загрузить areas: {e}")
-            self._areas = {}
-        
-        # Загружаем entity registry для привязки устройств к комнатам
-        try:
-            entity_registry = await self.ha.get_entity_registry()
-            # Добавляем area_id к каждому устройству
-            for eid in self._entities:
-                if eid in entity_registry:
-                    area_id = entity_registry[eid]
-                    if area_id and area_id in self._areas:
-                        # Добавляем информацию о комнате в атрибуты
-                        if "attributes" not in self._entities[eid]:
-                            self._entities[eid]["attributes"] = {}
-                        self._entities[eid]["attributes"]["area_name"] = self._areas[area_id]
-        except Exception as e:
-            logger.warning(f"Не удалось загрузить entity registry: {e}")
-        
         # Создаём алиасы из friendly_name
         for eid, data in self._entities.items():
             attrs = data.get("attributes", {})
@@ -418,12 +370,13 @@ class EntityRegistry:
         return sorted([k for k in self._entities if k.split(".")[0] == domain])
 
     def get_rooms(self) -> list:
-        """Получает список комнат из area registry."""
+        """Получает список комнат из area registry и атрибутов устройств."""
         rooms = set()
-        # Сначала пробуем получить из _areas (если загружено)
+        
+        # Сначала пробуем получить из _areas (если загружено через WebSocket)
         if hasattr(self, '_areas') and self._areas:
             for area_id, area_name in self._areas.items():
-                if area_name:
+                if area_name and isinstance(area_name, str):
                     rooms.add(area_name)
         
         # Если areas не загружены, пробуем найти в атрибутах устройств
@@ -431,12 +384,17 @@ class EntityRegistry:
             for data in self._entities.values():
                 attrs = data.get("attributes", {})
                 # Ищем различные возможные атрибуты комнаты
-                room = (attrs.get("room_name") or 
-                        attrs.get("area") or 
-                        attrs.get("area_name") or
-                        attrs.get("location"))
-                if room:
-                    rooms.add(room)
+                for key in ["room_name", "area", "area_name", "location"]:
+                    room = attrs.get(key)
+                    if room:
+                        # Проверяем тип - должно быть строкой
+                        if isinstance(room, str):
+                            rooms.add(room)
+                        elif isinstance(room, list) and len(room) > 0:
+                            # Если это список, берём первый элемент
+                            if isinstance(room[0], str):
+                                rooms.add(room[0])
+                        break  # Нашли комнату, переходим к следующему устройству
         
         return sorted(list(rooms))
 
