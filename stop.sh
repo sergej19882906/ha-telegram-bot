@@ -13,7 +13,7 @@ echo -e "${BLUE}========================================${NC}"
 echo
 
 # Поиск процессов бота
-PIDS=$(pgrep -f "python.*bot.py" 2>/dev/null)
+PIDS=$(pgrep -f "venv/bin/python.*bot.py" 2>/dev/null)
 
 if [ -z "$PIDS" ]; then
     echo -e "${YELLOW}[INFO] Бот не запущен${NC}"
@@ -30,21 +30,21 @@ kill $PIDS 2>/dev/null
 
 # Ожидание завершения (до 10 секунд)
 for i in $(seq 1 10); do
-    if ! pgrep -f "python.*bot.py" > /dev/null; then
+    if ! pgrep -f "venv/bin/python.*bot.py" > /dev/null; then
         break
     fi
     sleep 1
 done
 
 # Принудительная остановка, если не завершился
-if pgrep -f "python.*bot.py" > /dev/null; then
+if pgrep -f "venv/bin/python.*bot.py" > /dev/null; then
     echo -e "${YELLOW}[WARNING] Процессы не завершились за 10 секунд, принудительная остановка...${NC}"
-    pkill -9 -f "python.*bot.py"
+    pkill -9 -f "venv/bin/python.*bot.py"
     sleep 1
 fi
 
 # Финальная проверка
-if pgrep -f "python.*bot.py" > /dev/null; then
+if pgrep -f "venv/bin/python.*bot.py" > /dev/null; then
     echo -e "${RED}[ОШИБКА] Не удалось остановить бота${NC}"
     exit 1
 else
