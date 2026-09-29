@@ -16,6 +16,17 @@ Telegram-бот для Home Assistant с интерактивным меню и 
 - REFRESH_INTERVAL — интервал обновления реестра через .env
 - Валидация диапазона температуры для /set (4–40)
 - Приёмник уведомлений не роняет бота при занятом порте
+
+Версия 2.1.1:
+- Исправления: клавиатура на разбитых сообщениях, неоднозначные алиасы,
+  битые записи таймеров, /scene без ответа, HA_TIMEOUT, локализация «мин»
+- Таймеры сохраняются при каждом изменении (не только при shutdown)
+- Rate limit на /notify (20 запросов/мин)
+
+Версия 2.1.2:
+- Реестры комнат: фолбэк с REST (404/410 в новых HA) на websocket API
+- Warning о недоступности реестров пишется один раз, а не каждый цикл
+- Фоновая задача обновления реестра без предупреждения PTB
 """
 
 import asyncio
@@ -50,13 +61,15 @@ from telegram.ext import (
     filters,
 )
 
-# aiohttp нужен только для приёмника уведомлений (NOTIFY_PORT)
+# aiohttp нужен для приёмника уведомлений (NOTIFY_PORT) и websocket-запросов к HA
 try:
+    import aiohttp
     from aiohttp import web
 except ImportError:
+    aiohttp = None
     web = None
 
-BOT_VERSION = "2.1.1"
+BOT_VERSION = "2.1.2"
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -382,6 +395,7 @@ class HAClient:
 
     def __init__(self, base_url: str, token: str, timeout: float = 15.0):
         self.base_url = base_url.rstrip("/")
+        self.token = token
         self.timeout = timeout
         self.headers = {"Authorization": f"Bearer {token}"}
         self.client = httpx.AsyncClient(
@@ -495,6 +509,8 @@ class EntityRegistry:
         self._area_entities: dict = {}
         # Алиасы, встречающиеся у нескольких устройств (исключаем из точного поиска)
         self._ambiguous: set = set()
+        # Предупреждение о недоступности реестров пишется один раз
+        self._area_warned = False
 
     async def refresh(self):
         """Обновляет список устройств из Home Assistant."""
@@ -532,19 +548,24 @@ class EntityRegistry:
     async def _load_area_map(self):
         """Загружает соответствие комнат (areas) и устройств из реестров HA.
 
-        Использует area_registry / device_registry / entity_registry.
-        При недоступности (старая версия HA, права токена) оставляет
+        Сначала пробует REST-endpoints, при 404/410 (в новых версиях HA
+        они удалены) — websocket API. При полной недоступности оставляет
         пустой словарь — комнаты будут искаться по атрибутам (fallback).
         """
         self._area_names = {}
         self._area_entities = {}
         try:
-            areas = await self.ha.get_json("/api/config/area_registry/list")
-            devices = await self.ha.get_json("/api/config/device_registry/list")
-            ent_reg = await self.ha.get_json("/api/config/entity_registry/list")
+            areas, devices, ent_reg = await self._fetch_registries()
         except Exception as e:
-            logger.warning("area_registry недоступен (%s), комнаты — по атрибутам", e)
+            # Пишем предупреждение один раз, а не при каждом обновлении реестра
+            if not self._area_warned:
+                logger.warning(
+                    "Реестры комнат недоступны (%s: %s) — комнаты будут искаться по атрибутам",
+                    type(e).__name__, e
+                )
+                self._area_warned = True
             return
+        self._area_warned = False
 
         for a in areas:
             aid = a.get("area_id")
@@ -558,6 +579,59 @@ class EntityRegistry:
             aid = e.get("area_id") or dev_area.get(e.get("device_id"))
             if eid and aid:
                 self._area_entities.setdefault(aid, []).append(eid)
+
+    async def _fetch_registries(self):
+        """Получает area/device/entity registry: REST (старые HA) или websocket (новые)."""
+        try:
+            return (
+                await self.ha.get_json("/api/config/area_registry/list"),
+                await self.ha.get_json("/api/config/device_registry/list"),
+                await self.ha.get_json("/api/config/entity_registry/list"),
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code not in (404, 410):
+                raise
+        # В новых версиях HA REST-endpoints реестров удалены — используем websocket API
+        return await self._fetch_registries_ws()
+
+    async def _fetch_registries_ws(self):
+        """Достаёт реестры через websocket API HA (авторизация по токену)."""
+        if aiohttp is None:
+            raise HAError("aiohttp не установлен — websocket API недоступен")
+        ws_url = self.ha.base_url.replace("http://", "ws://", 1)
+        ws_url = ws_url.replace("https://", "wss://", 1).rstrip("/") + "/api/websocket"
+        timeout = aiohttp.ClientTimeout(total=max(20, self.ha.timeout * 2))
+
+        async def recv(ws):
+            return await asyncio.wait_for(ws.receive_json(), timeout=self.ha.timeout)
+
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.ws_connect(ws_url) as ws:
+                if (await recv(ws)).get("type") != "auth_required":
+                    raise HAError("HA websocket: неожиданный ответ при подключении")
+                await ws.send_json({"type": "auth", "access_token": self.ha.token})
+                if (await recv(ws)).get("type") != "auth_ok":
+                    raise HAError("HA websocket: авторизация отклонена (проверьте токен)")
+
+                msg_id = 0
+
+                async def call(msg_type):
+                    nonlocal msg_id
+                    msg_id += 1
+                    await ws.send_json({"id": msg_id, "type": msg_type})
+                    while True:
+                        resp = await recv(ws)
+                        if resp.get("id") != msg_id:
+                            continue  # пропускаем незапрошенные события
+                        if not resp.get("success"):
+                            raise HAError(f"HA websocket {msg_type}: {resp.get('error')}")
+                        return resp.get("result", [])
+
+                return (
+                    await call("config/area_registry/list"),
+                    await call("config/device_registry/list"),
+                    await call("config/entity_registry/list"),
+                )
 
     def by_id_or_alias(self, text: str) -> Optional[str]:
         """Ищет устройство по entity_id или алиасу."""
@@ -715,6 +789,8 @@ class HATelegramBot:
         self._notify_runner = None
         # Времена последних запросов к /notify (sliding window для rate limit)
         self._notify_hits: list = []
+        # Фоновая задача обновления реестра (создаётся в post_init)
+        self._refresh_task = None
 
     # ---------- Callback-токены ----------
 
@@ -1980,10 +2056,17 @@ def main():
                 except Exception as e:
                     logger.error("Ошибка обновления: %s", e)
 
-        application.create_task(refresher(), name="entity_refresh")
+        # Через asyncio, а не Application.create_task: post_init выполняется
+        # до старта application, и PTB предупреждает, что такая задача не
+        # отслеживается. Храним ссылку и отменяем вручную при остановке.
+        bot._refresh_task = asyncio.get_running_loop().create_task(
+            refresher(), name="entity_refresh"
+        )
 
     async def post_shutdown(application: Application):
         logger.info("Остановка бота...")
+        if bot._refresh_task is not None:
+            bot._refresh_task.cancel()
         bot.save_timers()
         for task in bot._timers.values():
             task.cancel()
