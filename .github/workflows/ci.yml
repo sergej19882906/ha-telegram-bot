@@ -81,5 +81,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # .env не коммитится (секреты) — для валидации compose создаём болванку
+      - name: Create dummy .env
+        run: cp .env.example .env
+
       - name: Validate compose file
         run: docker compose config --quiet
