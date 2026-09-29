@@ -27,6 +27,10 @@ Telegram-бот для Home Assistant с интерактивным меню и 
 - Реестры комнат: фолбэк с REST (404/410 в новых HA) на websocket API
 - Warning о недоступности реестров пишется один раз, а не каждый цикл
 - Фоновая задача обновления реестра без предупреждения PTB
+
+Версия 2.1.3:
+- После обнаружения 404 REST-endpoints реестров бот запоминает это
+  и дальше ходит на websocket напрямую (без 404-шума в логе каждый цикл)
 """
 
 import asyncio
@@ -69,7 +73,7 @@ except ImportError:
     aiohttp = None
     web = None
 
-BOT_VERSION = "2.1.2"
+BOT_VERSION = "2.1.3"
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -511,6 +515,8 @@ class EntityRegistry:
         self._ambiguous: set = set()
         # Предупреждение о недоступности реестров пишется один раз
         self._area_warned = False
+        # REST-endpoints реестров удалены (404/410) — дальше сразу websocket
+        self._rest_registries_gone = False
 
     async def refresh(self):
         """Обновляет список устройств из Home Assistant."""
@@ -582,16 +588,20 @@ class EntityRegistry:
 
     async def _fetch_registries(self):
         """Получает area/device/entity registry: REST (старые HA) или websocket (новые)."""
-        try:
-            return (
-                await self.ha.get_json("/api/config/area_registry/list"),
-                await self.ha.get_json("/api/config/device_registry/list"),
-                await self.ha.get_json("/api/config/entity_registry/list"),
-            )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code not in (404, 410):
-                raise
-        # В новых версиях HA REST-endpoints реестров удалены — используем websocket API
+        if not self._rest_registries_gone:
+            try:
+                return (
+                    await self.ha.get_json("/api/config/area_registry/list"),
+                    await self.ha.get_json("/api/config/device_registry/list"),
+                    await self.ha.get_json("/api/config/entity_registry/list"),
+                )
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code not in (404, 410):
+                    raise
+                # REST-endpoints удалены в новых версиях HA: до конца работы
+                # процесса идём сразу на websocket, не дёргая 404 каждый цикл
+                self._rest_registries_gone = True
+                logger.info("REST-endpoints реестров не найдены (404) — переключаюсь на websocket API")
         return await self._fetch_registries_ws()
 
     async def _fetch_registries_ws(self):
