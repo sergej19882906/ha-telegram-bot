@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # --- Проверки Python: синтаксис, импорт, наличие ключевых компонент ---
+  python-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Syntax check
+        run: python -m py_compile bot.py
+
+      - name: Import check
+        run: python -c "import bot; print('bot.py imports OK, messages:', len(bot.MESSAGES))"
+
+      - name: Smoke check — ключевые команды и компоненты существуют
+        run: |
+          python - <<'EOF'
+          import bot
+          b = bot.HATelegramBot
+          for name in ("cmd_set", "cmd_alloff", "cmd_timer", "cmd_state",
+                       "callback_handler", "on_menu_text",
+                       "start_notify_server", "save_timers", "restore_timers"):
+              assert hasattr(b, name), f"missing: {name}"
+          for key in ("ru", "en"):
+              assert key in bot.MESSAGES, f"missing lang: {key}"
+          print("smoke check OK")
+          EOF
+
+  # --- Проверка shell-скриптов ---
+  shell-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash syntax check
+        run: |
+          for f in *.sh; do
+            echo "checking $f"
+            bash -n "$f"
+          done
+
+      - name: Shellcheck (informational)
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck *.sh || true
+
+  # --- Сборка Docker-образа (без пуша) ---
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: ha-telegram-bot:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Validate compose file
+        run: docker compose config --quiet
