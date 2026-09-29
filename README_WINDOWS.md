@@ -139,6 +139,9 @@ python bot.py
 | `start.bat` | Обычный запуск бота |
 | `start_log.bat` | Запуск с записью лога в `logs\bot_<дата>.log` и выводом в консоль |
 | `stop.bat` | Принудительная остановка запущенного бота |
+| `uninstall.bat` | Полное удаление (служба, venv, логи, данные) |
+
+Для запуска бота **как службы Windows** используйте `install_service.bat` и компаньоны (`service_status.bat`, `service_restart.bat`, `service_log.bat`, `uninstall_service.bat`) — подробности в [README_WINDOWS_SERVICE.md](README_WINDOWS_SERVICE.md).
 
 ### Обычный запуск
 
