@@ -1,34 +1,27 @@
-# Секреты
+# Конфигурация с секретами — НЕ коммитить!
 .env
-.env.local
+
+# Виртуальное окружение
+venv/
+.venv/
+
+# Логи
+logs/
+*.log
+
+# Данные бота (языки, таймеры)
+data/
+user_langs.json
+timers.json
 
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-venv/
-.venv/
-env/
+*.egg-info/
+.pytest_cache/
 
-# Логи и данные
-logs/
-*.log
-user_langs.json
-
-# IDE
+# IDE / ОС
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# ОС
 .DS_Store
 Thumbs.db
-desktop.ini
-
-# Временные файлы
-*.tmp
-create_*.py
-nssm.exe
-nssm.zip
