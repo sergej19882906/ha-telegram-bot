@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 LABEL maintainer="sergej19882906"
 LABEL description="Telegram bot for Home Assistant with notifications receiver"
-LABEL version="2.1"
+LABEL version="2.1.1"
 LABEL org.label-schema.vcs-url="https://github.com/sergej19882906/ha-telegram-bot"
 LABEL com.centurylinklabs.watchtower.enable="true"
 LABEL com.centurylinklabs.watchtower.scope="ha-telegram-bot"
@@ -41,7 +41,7 @@ VOLUME ["/app/data"]
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD ["python", "-c", "import os; os.kill(1, 0)"]
 
-# Порт приёмника уведомлений из HA (NOTIFY_PORT, по умолчанию выключен)
-EXPOSE 8099
+# Порт приёмника задаётся через NOTIFY_PORT (по умолчанию выключен),
+# поэтому EXPOSE намеренно не фиксируем — порты пробрасывайте в compose/run.
 
 CMD ["python", "bot.py"]

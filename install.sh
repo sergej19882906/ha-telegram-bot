@@ -64,7 +64,7 @@ if [ -f "requirements.txt" ]; then
     pip install --upgrade -r requirements.txt --quiet
 else
     echo -e "${YELLOW}[WARNING] requirements.txt не найден, ставлю зависимости вручную...${NC}"
-    pip install --upgrade "python-telegram-bot>=21" httpx pydantic python-dotenv aiohttp --quiet
+    pip install --upgrade "python-telegram-bot>=21" httpx python-dotenv aiohttp --quiet
 fi
 
 if [ $? -ne 0 ]; then

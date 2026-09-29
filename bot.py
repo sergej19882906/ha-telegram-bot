@@ -56,7 +56,7 @@ try:
 except ImportError:
     web = None
 
-BOT_VERSION = "2.1"
+BOT_VERSION = "2.1.1"
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -106,6 +106,7 @@ MESSAGES = {
         "lang_set": "✅ Язык изменён на русский.",
         "not_found": "❌ Устройство не найдено.",
         "device_not_found": "❌ Устройство «{name}» не найдено.",
+        "device_unavailable": "⚠️ Устройство «{name}» сейчас недоступно.",
         "scene_not_found": "❌ Сцена «{name}» не найдена.",
         "empty_list": "📭 Список устройств пуст.",
         "empty_list_short": "📭 Список пуст.",
@@ -131,6 +132,7 @@ MESSAGES = {
         "timer_cancelled": "🚫 Таймер для <code>{eid}</code> отменён.",
         "timers_empty": "⏳ Активных таймеров нет.",
         "timers_title": "⏳ <b>Активные таймеры: {count}</b>\n\nНажмите на таймер, чтобы отменить:",
+        "timer_min": "мин",
         "room_not_found": "🔍 В комнате «{room}» устройств не найдено.",
         "room_title": "🏠 <b>Комната «{room}»:</b>",
         "all_devices_title": "📋 <b>Все устройства:</b>",
@@ -167,6 +169,7 @@ MESSAGES = {
         "device_hint": "Найдено устройство. Выберите действие:",
         "search_title": "🔎 <b>Найдено устройств: {count}</b>\n\nВыберите:",
         "search_empty": "🔍 По запросу «{q}» ничего не найдено.",
+        "search_more": "\n\n… и ещё {n} — уточните запрос",
         "alloff_confirm": "⚠️ <b>Выключить ВСЁ?</b>\n\nБудут выключены все устройства типов: свет, розетки, вентиляторы, шторы ({count} шт.).",
         "alloff_btn_yes": "✅ Да, выключить всё",
         "alloff_btn_no": "🚫 Отмена",
@@ -205,6 +208,7 @@ MESSAGES = {
         "lang_set": "✅ Language changed to English.",
         "not_found": "❌ Device not found.",
         "device_not_found": "❌ Device «{name}» not found.",
+        "device_unavailable": "⚠️ Device «{name}» is currently unavailable.",
         "scene_not_found": "❌ Scene «{name}» not found.",
         "empty_list": "📭 Device list is empty.",
         "empty_list_short": "📭 List is empty.",
@@ -230,6 +234,7 @@ MESSAGES = {
         "timer_cancelled": "🚫 Timer for <code>{eid}</code> cancelled.",
         "timers_empty": "⏳ No active timers.",
         "timers_title": "⏳ <b>Active timers: {count}</b>\n\nTap a timer to cancel it:",
+        "timer_min": "min",
         "room_not_found": "🔍 No devices found in room «{room}».",
         "room_title": "🏠 <b>Room «{room}»:</b>",
         "all_devices_title": "📋 <b>All devices:</b>",
@@ -266,6 +271,7 @@ MESSAGES = {
         "device_hint": "Device found. Choose an action:",
         "search_title": "🔎 <b>Devices found: {count}</b>\n\nChoose one:",
         "search_empty": "🔍 Nothing found for «{q}».",
+        "search_more": "\n\n… and {n} more — narrow your query",
         "alloff_confirm": "⚠️ <b>Turn off EVERYTHING?</b>\n\nAll lights, switches, fans and covers will be turned off ({count} devices).",
         "alloff_btn_yes": "✅ Yes, turn everything off",
         "alloff_btn_no": "🚫 Cancel",
@@ -487,6 +493,8 @@ class EntityRegistry:
         self._area_names: dict = {}
         # area_id -> [entity_id]
         self._area_entities: dict = {}
+        # Алиасы, встречающиеся у нескольких устройств (исключаем из точного поиска)
+        self._ambiguous: set = set()
 
     async def refresh(self):
         """Обновляет список устройств из Home Assistant."""
@@ -494,6 +502,7 @@ class EntityRegistry:
         self._entities = states
 
         self._aliases = {}
+        self._ambiguous = set()
         alias_dupes = 0
         for eid, data in self._entities.items():
             attrs = data.get("attributes", {})
@@ -503,10 +512,18 @@ class EntityRegistry:
                 if alias and alias != eid.split(".")[-1].lower():
                     if alias in self._aliases:
                         alias_dupes += 1
-                    self._aliases[alias] = eid
+                        self._ambiguous.add(alias)
+                    else:
+                        self._aliases[alias] = eid
+        # Неоднозначные алиасы исключаем из точного поиска: иначе /off <имя>
+        # выключило бы случайное из одноимённых устройств. Такие устройства
+        # по-прежнему находятся подстрочным поиском с выбором кнопками.
+        for alias in self._ambiguous:
+            self._aliases.pop(alias, None)
         if alias_dupes:
             logger.warning(
-                "Дублирующиеся имена устройств: %d — алиас указывает на последнее из них",
+                "Дублирующиеся имена устройств: %d — такие имена исключены из точного "
+                "поиска, используйте подстрочный (/state <часть имени>)",
                 alias_dupes,
             )
 
@@ -595,7 +612,8 @@ class EntityRegistry:
                 if isinstance(room, list):
                     if room and isinstance(room[0], str) and room[0].strip():
                         rooms.add(room[0].strip())
-                    break
+                        break
+                    continue  # пустой атрибут — проверяем следующий ключ
                 if isinstance(room, str) and room.strip():
                     rooms.add(room.strip())
                     break
@@ -674,6 +692,8 @@ class HATelegramBot:
 
     # Максимальная длина одного сообщения Telegram (с запасом на HTML)
     MAX_MSG = 4000
+    # Максимум запросов к /notify в минуту (защита от спама через бота)
+    NOTIFY_RATE_LIMIT = 20
 
     def __init__(self, cfg, allowed_users: Optional[set]):
         self.cfg = cfg
@@ -693,6 +713,8 @@ class HATelegramBot:
         self._cb_seq = 0
         self.app = None
         self._notify_runner = None
+        # Времена последних запросов к /notify (sliding window для rate limit)
+        self._notify_hits: list = []
 
     # ---------- Callback-токены ----------
 
@@ -755,9 +777,14 @@ class HATelegramBot:
                 buttons.append([InlineKeyboardButton(
                     fname, callback_data=self._tok(f"{action_key}:{m}"),
                 )])
+            text = t(uid, "search_title", count=len(matches))
+            # Показываем, что найдено больше, чем вмещает список кнопок
+            total = len(self.registry.search(name, limit=10**6))
+            if total > len(matches):
+                text += t(uid, "search_more", n=total - len(matches))
             await self._reply_text(
                 update,
-                t(uid, "search_title", count=len(matches)),
+                text,
                 "HTML",
                 reply_markup=InlineKeyboardMarkup(buttons),
             )
@@ -770,10 +797,15 @@ class HATelegramBot:
         parts = self._split_message(text, self.MAX_MSG)
         result = None
         for i, part in enumerate(parts, 1):
+            # Клавиатура — только к последней части, иначе она продублируется
+            # на каждой части разбитого сообщения
+            part_kwargs = dict(kwargs)
+            if i < len(parts):
+                part_kwargs.pop("reply_markup", None)
             try:
                 result = await update.effective_message.reply_text(
                     part, parse_mode=parse_mode,
-                    disable_web_page_preview=True, **kwargs,
+                    disable_web_page_preview=True, **part_kwargs,
                 )
             except BadRequest as e:
                 if parse_mode and ("entities" in str(e) or "parse" in str(e)):
@@ -781,7 +813,7 @@ class HATelegramBot:
                     logger.warning("Ошибка парсинга HTML, отправляю plain text: %s", e)
                     result = await update.effective_message.reply_text(
                         re.sub(r"<[^>]+>", "", part),
-                        disable_web_page_preview=True, **kwargs,
+                        disable_web_page_preview=True, **part_kwargs,
                     )
                 else:
                     logger.warning("Ошибка отправки части %d: %s", i, e)
@@ -946,6 +978,11 @@ class HATelegramBot:
             return
         try:
             s = await self._get_state(eid)
+            if s and s.get("state") == "unavailable":
+                fname = self.registry.get_friendly_name(eid)
+                return await self._reply_text(
+                    update, t(uid, "device_unavailable", name=esc(fname))
+                )
             if s and s.get("state") == "off":
                 await self.ha.turn_on(eid)
             else:
@@ -984,8 +1021,6 @@ class HATelegramBot:
             await self.ha.set_value(eid, value)
             shown = f"{value:g}%" if domain == "light" else f"{value:g}°"
             await self._reply_text(update, t(uid, "value_set", value=esc(shown)))
-        except HAError as e:
-            await self._reply_text(update, t(uid, "error", err=esc(str(e))))
         except Exception as e:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
@@ -1056,7 +1091,7 @@ class HATelegramBot:
             await self.ha.apply_scene(eid)
             fname = self.registry.get_friendly_name(eid)
             await self._reply_text(update, t(uid, "scene_applied", name=esc(fname)), "HTML")
-        except HAError as e:
+        except Exception as e:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1109,7 +1144,7 @@ class HATelegramBot:
         buttons = []
         for eid, fname, left in rows:
             buttons.append([InlineKeyboardButton(
-                f"❌ {fname} — {left} мин",
+                f"❌ {fname} — {left} {t(uid, 'timer_min')}",
                 callback_data=self._tok(f"tmrc:{eid}"),
             )])
         await self._reply_text(
@@ -1127,9 +1162,12 @@ class HATelegramBot:
             task.cancel()
             self._timers.pop(key, None)
             self._timer_meta.pop(key, None)
+            self.save_timers(verbose=False)
             return True
-        self._timers.pop(key, None)
-        self._timer_meta.pop(key, None)
+        if key in self._timers or key in self._timer_meta:
+            self._timers.pop(key, None)
+            self._timer_meta.pop(key, None)
+            self.save_timers(verbose=False)
         return False
 
     async def _start_timer(self, uid: Optional[int], chat_id: Optional[int],
@@ -1170,9 +1208,11 @@ class HATelegramBot:
                 if self._timers.get(key) is current_task:
                     self._timers.pop(key, None)
                     self._timer_meta.pop(key, None)
+                    self.save_timers(verbose=False)
 
         current_task = asyncio.create_task(turn_off_later())
         self._timers[key] = current_task
+        self.save_timers(verbose=False)
 
         if remaining is not None:
             left = max(1, round(remaining / 60))
@@ -1217,13 +1257,14 @@ class HATelegramBot:
             failed = sum(1 for r in results if isinstance(r, Exception))
             if failed:
                 logger.warning("alloff: не выключено %d из %d", failed, len(targets))
-            await query.edit_message_text(
+            await self._edit_msg(
+                query,
                 t(uid, "alloff_done", count=len(targets) - failed),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+                "HTML",
+                InlineKeyboardMarkup([self._back_to_main_button(uid)]),
             )
         except Exception as e:
-            await query.edit_message_text(t(uid, "alloff_error", err=esc(str(e))))
+            await self._edit_msg(query, t(uid, "alloff_error", err=esc(str(e))))
 
     # ---------- Inline-меню ----------
     def _main_menu_inline(self, uid: Optional[int]) -> InlineKeyboardMarkup:
@@ -1386,33 +1427,38 @@ class HATelegramBot:
             kb = InlineKeyboardMarkup(buttons)
         await self._send_or_edit(update_or_query, text, "HTML", kb)
 
+    async def _edit_msg(self, query, text: str, parse_mode: Optional[str] = None, reply_markup=None):
+        """Редактирует сообщение, глуша ожидаемые ошибки Telegram."""
+        try:
+            await query.edit_message_text(
+                text, parse_mode=parse_mode, reply_markup=reply_markup,
+                disable_web_page_preview=True,
+            )
+        except BadRequest as e:
+            msg = str(e).lower()
+            if "not modified" in msg:
+                return  # текст не изменился (повторное нажатие) — не ошибка
+            if parse_mode and ("entities" in msg or "parse" in msg):
+                try:
+                    await query.edit_message_text(
+                        re.sub(r"<[^>]+>", "", text),
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=True,
+                    )
+                except BadRequest as e2:
+                    if "not modified" not in str(e2).lower():
+                        logger.warning("Ошибка редактирования (plain): %s", e2)
+                except Exception as e2:
+                    logger.warning("Ошибка редактирования (plain): %s", e2)
+            else:
+                logger.warning("Ошибка редактирования: %s", e)
+        except Exception as e:
+            logger.warning("Ошибка редактирования: %s", e)
+
     async def _send_or_edit(self, update_or_query, text: str, parse_mode: Optional[str] = None, reply_markup=None):
         """Универсальный метод: редактирует или отправляет сообщение."""
         if hasattr(update_or_query, "data"):
-            query = update_or_query
-            if len(text) > 4096:
-                # Слишком длинное для редактирования — отправляем новым сообщением
-                await self._reply_text(query, text, parse_mode, reply_markup=reply_markup)
-                return
-            try:
-                await query.edit_message_text(
-                    text, parse_mode=parse_mode, reply_markup=reply_markup,
-                    disable_web_page_preview=True,
-                )
-            except BadRequest as e:
-                if "entities" in str(e) or "parse" in str(e):
-                    try:
-                        await query.edit_message_text(
-                            re.sub(r"<[^>]+>", "", text),
-                            reply_markup=reply_markup,
-                            disable_web_page_preview=True,
-                        )
-                    except Exception as e2:
-                        logger.warning("Ошибка редактирования (plain): %s", e2)
-                else:
-                    logger.warning("Ошибка редактирования: %s", e)
-            except Exception as e:
-                logger.warning("Ошибка редактирования: %s", e)
+            await self._edit_msg(update_or_query, text, parse_mode, reply_markup)
         else:
             update = update_or_query
             await self._reply_text(
@@ -1432,7 +1478,7 @@ class HATelegramBot:
         # Разрешаем короткие токены в полные payload
         payload = self._resolve_tok(data) if data.startswith("x") else None
         if data.startswith("x") and payload is None:
-            await query.edit_message_text(t(uid, "cb_expired"))
+            await self._edit_msg(query, t(uid, "cb_expired"))
             return
         if payload:
             data = payload
@@ -1442,7 +1488,7 @@ class HATelegramBot:
             lang = data.split("_", 1)[1]
             if lang in MESSAGES:
                 set_lang(uid, lang)
-                await query.edit_message_text(t(uid, "lang_set"))
+                await self._edit_msg(query, t(uid, "lang_set"))
                 await query.message.reply_text(
                     t(uid, "main_menu_title"),
                     parse_mode="HTML",
@@ -1452,10 +1498,11 @@ class HATelegramBot:
 
         # Навигация по меню
         if data == "menu_main":
-            await query.edit_message_text(
+            await self._edit_msg(
+                query,
                 t(uid, "main_menu_title"),
-                parse_mode="HTML",
-                reply_markup=self._main_menu_inline(uid),
+                "HTML",
+                self._main_menu_inline(uid),
             )
         elif data == "menu_control":
             await self._show_control_menu(query, uid)
@@ -1468,10 +1515,11 @@ class HATelegramBot:
         elif data == "menu_settings":
             await self._show_settings_menu(query, uid)
         elif data == "menu_help":
-            await query.edit_message_text(
+            await self._edit_msg(
+                query,
                 t(uid, "help_text"),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+                "HTML",
+                InlineKeyboardMarkup([self._back_to_main_button(uid)]),
             )
         elif data == "ctrl_on":
             await self._show_device_list(query, uid, t(uid, "btn_on"), "on")
@@ -1492,11 +1540,12 @@ class HATelegramBot:
                 ],
                 [InlineKeyboardButton(t(uid, "btn_back"), callback_data="menu_settings")],
             ])
-            await query.edit_message_text(t(uid, "choose_lang"), reply_markup=keyboard)
+            await self._edit_msg(query, t(uid, "choose_lang"), reply_markup=keyboard)
         elif data == "set_hastatus":
             ok = await self.ha.healthcheck()
             text = t(uid, "ha_online") if ok else t(uid, "ha_offline")
-            await query.edit_message_text(
+            await self._edit_msg(
+                query,
                 text,
                 reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
             )
@@ -1508,11 +1557,12 @@ class HATelegramBot:
                 await self._apply_set_action(query, uid, arg)
             elif action == "tmrc":
                 if self._cancel_timer(uid, arg):
-                    await query.edit_message_text(
-                        t(uid, "timer_cancelled", eid=esc(arg)), parse_mode="HTML",
+                    await self._edit_msg(
+                        query,
+                        t(uid, "timer_cancelled", eid=esc(arg)), "HTML",
                     )
                 else:
-                    await query.edit_message_text(t(uid, "cb_expired"))
+                    await self._edit_msg(query, t(uid, "cb_expired"))
             elif action == "room":
                 await self._show_room(query, uid, arg)
             elif action == "scene":
@@ -1523,7 +1573,7 @@ class HATelegramBot:
                 if arg == "yes":
                     await self._alloff_execute(query, uid)
                 else:
-                    await query.edit_message_text(t(uid, "alloff_cancelled"))
+                    await self._edit_msg(query, t(uid, "alloff_cancelled"))
             else:
                 logger.warning("Неизвестный callback: %s", data)
 
@@ -1538,19 +1588,25 @@ class HATelegramBot:
                 key = "turned_off"
             else:  # tg
                 s = await self._get_state(eid)
+                if s and s.get("state") == "unavailable":
+                    fname = self.registry.get_friendly_name(eid)
+                    return await self._edit_msg(
+                        query, t(uid, "device_unavailable", name=esc(fname))
+                    )
                 if s and s.get("state") == "off":
                     await self.ha.turn_on(eid)
                 else:
                     await self.ha.turn_off(eid)
                 key = "toggled"
             fname = self.registry.get_friendly_name(eid)
-            await query.edit_message_text(
+            await self._edit_msg(
+                query,
                 t(uid, key, name=esc(fname)),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+                "HTML",
+                InlineKeyboardMarkup([self._back_to_main_button(uid)]),
             )
         except Exception as e:
-            await query.edit_message_text(t(uid, "error", err=esc(str(e))))
+            await self._edit_msg(query, t(uid, "error", err=esc(str(e))))
 
     async def _apply_set_action(self, query, uid: Optional[int], arg: str):
         """Устанавливает яркость/температуру по inline-кнопке (payload: <eid>:<значение>)."""
@@ -1558,36 +1614,39 @@ class HATelegramBot:
         try:
             value = float(raw)
         except ValueError:
-            return await query.edit_message_text(t(uid, "error", err="bad value"))
+            return await self._edit_msg(query, t(uid, "error", err="bad value"))
         try:
             await self.ha.set_value(eid, value)
             shown = f"{value:g}%" if eid.startswith("light.") else f"{value:g}°"
-            await query.edit_message_text(
+            await self._edit_msg(
+                query,
                 t(uid, "value_set", value=esc(shown)),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+                "HTML",
+                InlineKeyboardMarkup([self._back_to_main_button(uid)]),
             )
         except Exception as e:
-            await query.edit_message_text(t(uid, "error", err=esc(str(e))))
+            await self._edit_msg(query, t(uid, "error", err=esc(str(e))))
 
     async def _apply_scene(self, query, uid: Optional[int], scene_id: str):
         """Активирует сцену по inline-кнопке."""
         try:
             await self.ha.apply_scene(scene_id)
             fname = self.registry.get_friendly_name(scene_id)
-            await query.edit_message_text(
+            await self._edit_msg(
+                query,
                 t(uid, "scene_applied", name=esc(fname)),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+                "HTML",
+                InlineKeyboardMarkup([self._back_to_main_button(uid)]),
             )
         except Exception as e:
-            await query.edit_message_text(t(uid, "error", err=esc(str(e))))
+            await self._edit_msg(query, t(uid, "error", err=esc(str(e))))
 
     async def _show_status_list(self, query, uid: Optional[int], domain: Optional[str]):
         """Показывает список устройств с их состояниями (обрезка по строкам)."""
         entities = self.registry.list_entities(domain)
         if not entities:
-            await query.edit_message_text(
+            await self._edit_msg(
+                query,
                 t(uid, "empty_list_short"),
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(t(uid, "btn_back"), callback_data="menu_status")],
@@ -1601,15 +1660,11 @@ class HATelegramBot:
         title_key = "all_devices_title" if domain is None else "devices_of_type_title"
         title = t(uid, title_key, domain=esc(domain)) if domain else t(uid, title_key)
         text = self._truncate_lines(uid, title, lines)
-        if len(text) > 4096:
-            await self._reply_text(query, text, "HTML", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(uid, "btn_back"), callback_data="menu_status")],
-            ]))
-            return
-        await query.edit_message_text(
+        await self._edit_msg(
+            query,
             text,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
+            "HTML",
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton(t(uid, "btn_back"), callback_data="menu_status")],
             ]),
         )
@@ -1652,9 +1707,13 @@ class HATelegramBot:
             for m in matches:
                 fname = self.registry.get_friendly_name(m)
                 buttons.append([InlineKeyboardButton(fname, callback_data=self._tok(f"card:{m}"))])
+            msg_text = t(uid, "search_title", count=len(matches))
+            total = len(self.registry.search(text, limit=10**6))
+            if total > len(matches):
+                msg_text += t(uid, "search_more", n=total - len(matches))
             await self._reply_text(
                 update,
-                t(uid, "search_title", count=len(matches)),
+                msg_text,
                 "HTML",
                 reply_markup=InlineKeyboardMarkup(buttons),
             )
@@ -1664,7 +1723,7 @@ class HATelegramBot:
         s = await self._get_state(eid)
         if not s:
             if hasattr(update_or_query, "data"):
-                await update_or_query.edit_message_text(t(uid, "not_found"))
+                await self._edit_msg(update_or_query, t(uid, "not_found"))
             else:
                 await self._reply_text(update_or_query, t(uid, "not_found"))
             return
@@ -1710,6 +1769,11 @@ class HATelegramBot:
 
     async def _handle_notify(self, request):
         """HTTP-обработчик POST /notify — принимает уведомления из HA."""
+        now = time.time()
+        self._notify_hits = [h for h in self._notify_hits if now - h < 60]
+        if len(self._notify_hits) >= self.NOTIFY_RATE_LIMIT:
+            return web.json_response({"ok": False, "error": "rate limit"}, status=429)
+        self._notify_hits.append(now)
         if self.cfg.notify_token:
             auth = request.headers.get("Authorization", "")
             if auth != f"Bearer {self.cfg.notify_token}":
@@ -1773,8 +1837,8 @@ class HATelegramBot:
             self._notify_runner = None
 
     # ---------- Сохранение/восстановление таймеров ----------
-    def save_timers(self):
-        """Сохраняет активные таймеры в файл (вызывается при shutdown)."""
+    def save_timers(self, verbose: bool = True):
+        """Сохраняет активные таймеры в файл (при изменениях и при shutdown)."""
         data = []
         now = time.time()
         for (uid, eid), meta in self._timer_meta.items():
@@ -1791,7 +1855,8 @@ class HATelegramBot:
         try:
             TIMERS_FILE.parent.mkdir(parents=True, exist_ok=True)
             TIMERS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            logger.info("Сохранено таймеров: %d", len(data))
+            if verbose:
+                logger.info("Сохранено таймеров: %d", len(data))
         except Exception as e:
             logger.warning("Не удалось сохранить таймеры: %s", e)
 
@@ -1807,12 +1872,19 @@ class HATelegramBot:
         now = time.time()
         restored = 0
         for item in data:
-            remaining = item.get("fire_at", 0) - now
+            if not isinstance(item, dict):
+                continue
+            eid = item.get("eid")
+            fire_at = item.get("fire_at")
+            if not eid or not isinstance(fire_at, (int, float)):
+                logger.warning("Пропускаю повреждённую запись таймера: %r", item)
+                continue
+            remaining = fire_at - now
             if remaining <= 0:
                 continue
             await self._start_timer(
                 item.get("uid"), item.get("chat_id"),
-                item["eid"], item["minutes"], remaining=remaining,
+                eid, item.get("minutes") or 0, remaining=remaining,
             )
             restored += 1
         try:
@@ -1862,12 +1934,17 @@ def parse_allowed_users() -> Optional[set]:
 
 def main():
     """Точка входа: настройка и запуск бота."""
+    try:
+        ha_timeout = int(os.environ.get("HA_TIMEOUT") or 15)
+    except ValueError:
+        logger.warning("Неверный HA_TIMEOUT=%r, использую 15", os.environ.get("HA_TIMEOUT"))
+        ha_timeout = 15
     cfg = Config(
         token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         base_url=os.environ.get("HA_BASE_URL", "http://localhost:8123"),
         ha_token=os.environ.get("HA_ACCESS_TOKEN", ""),
         allowed_users=parse_allowed_users(),
-        timeout=int(os.environ.get("HA_TIMEOUT") or 15),
+        timeout=ha_timeout,
         notify_host=os.environ.get("NOTIFY_HOST", "0.0.0.0"),
         notify_port=int(os.environ.get("NOTIFY_PORT") or 0),
         notify_token=os.environ.get("NOTIFY_TOKEN") or None,
