@@ -2046,6 +2046,7 @@ class HATelegramBot:
         text = body.get("text")
         if not text or not isinstance(text, str):
             return web.json_response({"ok": False, "error": "text required"}, status=400)
+        logger.info("Уведомление от HA: %s", text[:100])
         parse_mode = body.get("parse_mode") if body.get("parse_mode") in ("HTML", "MarkdownV2") else None
 
         targets = body.get("chat_ids")
