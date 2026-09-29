@@ -116,7 +116,7 @@ mkdir -p logs data
 
 # Установка прав выполнения на скрипты
 echo -e "${BLUE}[INFO] Устанавливаю права выполнения на скрипты...${NC}"
-chmod +x install.sh start.sh start_log.sh stop.sh uninstall.sh install_service.sh 2>/dev/null
+chmod +x install.sh start.sh start_log.sh stop.sh uninstall.sh install_service.sh deploy.sh 2>/dev/null
 
 # Защита .env
 if [ -f ".env" ]; then

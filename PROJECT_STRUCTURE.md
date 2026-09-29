@@ -24,7 +24,8 @@ ha-telegram-bot/
 │   ├── start_log.sh             # Запуск с логированием в logs/
 │   ├── stop.sh                  # Мягкая остановка (сохраняет таймеры)
 │   ├── install_service.sh       # Установка systemd-службы
-│   └── uninstall_service.sh     # Удаление systemd-службы
+│   ├── uninstall_service.sh     # Удаление systemd-службы
+│   └── deploy.sh                # Обновление на сервере: git pull + зависимости + рестарт + лог
 │
 ├── 🪟 Windows-скрипты (.bat)
 │   ├── install.bat              # Установка: venv + зависимости + .env
