@@ -456,11 +456,18 @@ class HAClient:
         return r.json()
 
     async def post_json(self, path: str, body: dict):
-        """Выполняет POST-запрос и возвращает JSON."""
+        """Выполняет POST-запрос и возвращает JSON.
+
+        В текст ошибки включает тело ответа HA — там HA пишет причину
+        (например, почему упал rest_command).
+        """
         r = await self.client.post(path, json=body, timeout=self.timeout)
         if r.status_code == 401:
             raise HAError("Invalid HA access token.")
-        r.raise_for_status()
+        if r.status_code >= 400:
+            detail = (r.text or "").strip()[:300]
+            raise HAError(f"HTTP {r.status_code}: {detail}" if detail
+                          else f"HTTP {r.status_code}")
         return r.json()
 
     async def healthcheck(self) -> bool:
