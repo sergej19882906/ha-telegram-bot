@@ -77,7 +77,7 @@ docker run -d \
   ghcr.io/sergej19882906/ha-telegram-bot:latest
 ```
 
-> 💡 Образ в GHCR публичный — `docker login` не требуется. Тег `latest` соответствует последнему релизу; конкретную версию можно взять по тегу, например `:2.0`.
+> 💡 Образ в GHCR публичный — `docker login` не требуется. Тег `latest` соответствует последнему релизу; конкретную версию можно взять по тегу, например `:2.1`.
 
 ---
 
@@ -171,7 +171,8 @@ rest_command:
     headers:
       Authorization: "Bearer <NOTIFY_TOKEN_из_.env>"
     content_type: application/json
-    payload: '{"text": "{{ message }}"}'
+    # tojson экранирует кавычки и переводы строк в тексте сообщения
+    payload: '{"text": {{ message | tojson }}}'
 ```
 
 Если Home Assistant тоже работает в Docker на том же хосте, используйте IP хоста или `host.docker.internal` (Docker Desktop) — адрес `localhost` внутри контейнера HA указывает на сам контейнер HA.
@@ -254,4 +255,4 @@ docker run -d --name ha-telegram-bot --restart unless-stopped \
 
 ---
 
-*Документация актуальна на сентябрь 2026 года. Версия бота: 2.0*
+*Документация актуальна на сентябрь 2026 года. Версия бота: 2.1*
