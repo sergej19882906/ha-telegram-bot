@@ -30,8 +30,8 @@ fi
 # Активация окружения
 source venv/bin/activate
 
-# Создание папки для логов
-mkdir -p logs
+# Создание папок для логов и данных
+mkdir -p logs data
 
 # Имя лог-файла с датой
 LOGFILE="logs/bot_$(date +%Y%m%d_%H%M%S).log"
@@ -45,6 +45,6 @@ echo
 python bot.py 2>&1 | tee "$LOGFILE"
 
 echo
-echo -e "${YELLOW}[INFO] Бот остановлен${NC}"
+echo -e "${YELLOW}[INFO] Бот остановлен (таймеры сохранены в data/timers.json)${NC}"
 echo -e "${BLUE}[INFO] Полный лог сохранён в: $LOGFILE${NC}"
 read -p "Нажмите Enter для выхода..."

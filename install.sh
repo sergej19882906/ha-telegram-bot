@@ -9,6 +9,7 @@ NC='\033[0m' # Без цвета
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}  Установка HA Telegram Bot для Linux${NC}"
+echo -e "${BLUE}  v2.0${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo
 
@@ -57,9 +58,14 @@ source venv/bin/activate
 echo -e "${BLUE}[INFO] Обновляю pip...${NC}"
 python -m pip install --upgrade pip --quiet
 
-# Установка зависимостей
-echo -e "${BLUE}[INFO] Устанавливаю зависимости...${NC}"
-pip install --upgrade "python-telegram-bot>=21" httpx pydantic python-dotenv --quiet
+# Установка зависимостей из requirements.txt
+if [ -f "requirements.txt" ]; then
+    echo -e "${BLUE}[INFO] Устанавливаю зависимости из requirements.txt...${NC}"
+    pip install --upgrade -r requirements.txt --quiet
+else
+    echo -e "${YELLOW}[WARNING] requirements.txt не найден, ставлю зависимости вручную...${NC}"
+    pip install --upgrade "python-telegram-bot>=21" httpx pydantic python-dotenv aiohttp --quiet
+fi
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}[ОШИБКА] Не удалось установить зависимости${NC}"
@@ -68,6 +74,10 @@ fi
 
 # Создание .env, если его нет
 if [ ! -f ".env" ]; then
+    if [ -f ".env.example" ]; then
+        echo -e "${BLUE}[INFO] Копирую .env.example в .env...${NC}"
+        cp .env.example .env
+    else
     echo -e "${BLUE}[INFO] Создаю шаблон .env файла...${NC}"
     cat > .env << 'EOF'
 # Telegram bot token (от @BotFather)
@@ -77,32 +87,48 @@ TELEGRAM_BOT_TOKEN=
 HA_BASE_URL=http://localhost:8123
 HA_ACCESS_TOKEN=
 
-# Ваш Telegram ID (защита от чужих пользователей)
-ALLOWED_USER_ID=
+# Разрешённые пользователи — Telegram ID через запятую (узнать ID: @userinfobot)
+# ВНИМАНИЕ: если не задать, доступ к боту будет разрешён ВСЕМ!
+ALLOWED_USER_IDS=
 
 # Язык по умолчанию: ru или en
 DEFAULT_LANG=ru
+
+# --- Приёмник уведомлений из Home Assistant (опционально) ---
+# NOTIFY_PORT=0 — приёмник выключен. Укажите порт (например, 8099), чтобы
+# HA мог присылать уведомления через rest_command (см. README.md).
+NOTIFY_PORT=0
+NOTIFY_HOST=0.0.0.0
+# Секретная строка авторизации (обязательно задайте, если NOTIFY_PORT != 0)
+NOTIFY_TOKEN=
 EOF
-    
-    echo
-    echo -e "${YELLOW}============================================${NC}"
-    echo -e "${YELLOW}  ВАЖНО! Откройте файл .env и заполните его!${NC}"
-    echo -e "${YELLOW}============================================${NC}"
-    echo -e "${YELLOW}Команда: nano .env${NC}"
+
+        echo
+        echo -e "${YELLOW}============================================${NC}"
+        echo -e "${YELLOW}  ВАЖНО! Откройте файл .env и заполните его!${NC}"
+        echo -e "${YELLOW}============================================${NC}"
+        echo -e "${YELLOW}Команда: nano .env${NC}"
+    fi
 fi
 
-# Создание папки для логов
-mkdir -p logs
+# Создание папок для логов и данных
+mkdir -p logs data
 
 # Установка прав выполнения на скрипты
 echo -e "${BLUE}[INFO] Устанавливаю права выполнения на скрипты...${NC}"
-chmod +x install.sh start.sh start_log.sh stop.sh uninstall.sh 2>/dev/null
+chmod +x install.sh start.sh start_log.sh stop.sh uninstall.sh install_service.sh 2>/dev/null
+
+# Защита .env
+if [ -f ".env" ]; then
+    chmod 600 .env
+fi
 
 echo
 echo -e "${GREEN}✅ Установка завершена!${NC}"
 echo
 echo -e "${BLUE}Следующие шаги:${NC}"
 echo "  1. Отредактируйте файл .env: nano .env"
+echo "     (обязательно укажите ALLOWED_USER_IDS!)"
 echo "  2. Запустите бота: ./start.sh"
 echo
 echo -e "${YELLOW}Для автозапуска через systemd выполните:${NC}"

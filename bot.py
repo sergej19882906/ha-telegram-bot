@@ -2,14 +2,12 @@
 Telegram-бот для Home Assistant с интерактивным меню и локализацией.
 Поддержка Docker: данные сохраняются в /app/data (или DATA_DIR).
 
-Исправления (см. CHANGELOG в README):
-- Реализована команда /set (яркость света в %, температура climate)
-- Таймеры: несколько на пользователя, корректная отмена при повторном запуске
-- Комнаты через area_registry/device_registry/entity_registry (с fallback на атрибуты)
-- Callback-данные больше не обрезаются (маппинг через короткие токены)
-- Безопасное обрезание HTML-списков (по строкам, без разрыва тегов)
-- Текстовый ввод показывает статус + кнопки вместо опасного "выключить по умолчанию"
-- /state без аргументов показывает живые данные из HA, а не кеш
+Возможности:
+- Управление устройствами (on/off/toggle/set), сцены, комнаты (area_registry),
+  таймеры (сохраняются между перезапусками), многоязычность (ru/en)
+- Несколько разрешённых пользователей (ALLOWED_USER_IDS)
+- HTTP-приёмник уведомлений из Home Assistant (NOTIFY_PORT / NOTIFY_TOKEN)
+- Поиск устройств по подстроке, /alloff с подтверждением
 """
 
 import asyncio
@@ -18,7 +16,8 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +41,12 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
+# aiohttp нужен только для приёмника уведомлений (NOTIFY_PORT)
+try:
+    from aiohttp import web
+except ImportError:
+    web = None
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -111,6 +116,7 @@ MESSAGES = {
         "timer_started": "⏳ Таймер запущен для <code>{eid}</code>.\nУстройство выключится через {minutes} мин.",
         "timer_fired": "⏰ Таймер сработал: устройство <code>{eid}</code> выключено через {minutes} мин.",
         "timer_replaced": "♻️ Предыдущий таймер для этого устройства отменён.",
+        "timer_restored": "♻️ Восстановлен таймер для <code>{eid}</code> (осталось {minutes} мин).",
         "room_not_found": "🔍 В комнате «{room}» устройств не найдено.",
         "room_title": "🏠 <b>Комната «{room}»:</b>",
         "all_devices_title": "📋 <b>Все устройства:</b>",
@@ -131,17 +137,27 @@ MESSAGES = {
             "<code>/off</code> <i>имя</i> — выключить\n"
             "<code>/toggle</code> <i>имя</i> — переключить\n"
             "<code>/set</code> <i>имя значение</i> — яркость света в % или температура климата\n"
-            "<code>/state</code> [<i>имя</i>] — статус\n"
+            "<code>/state</code> [<i>имя</i>] — статус (без имени — все устройства)\n"
             "<code>/room</code> <i>комната</i> — устройства в комнате\n"
             "<code>/scene</code> <i>имя</i> — активировать сцену\n"
             "<code>/timer</code> <i>мин имя</i> — таймер выключения\n"
-            "<code>/status</code> — статус HA"
+            "<code>/alloff</code> — выключить весь свет и розетки\n"
+            "<code>/status</code> — статус HA\n\n"
+            "💡 Просто напишите имя устройства — покажу его статус и кнопки."
         ),
         "menu_hidden": "🙈 Меню скрыто. Используйте /menu, чтобы вернуть.",
         "no_rooms": "🔍 Комнаты не найдены.",
         "no_scenes": "🔍 Сцены не найдены.",
         "cb_expired": "⚠️ Данные кнопки устарели. Отправьте /menu заново.",
         "device_hint": "Найдено устройство. Выберите действие:",
+        "search_title": "🔎 <b>Найдено устройств: {count}</b>\n\nВыберите:",
+        "search_empty": "🔍 По запросу «{q}» ничего не найдено.",
+        "alloff_confirm": "⚠️ <b>Выключить ВСЁ?</b>\n\nБудут выключены все устройства типов: свет, розетки, вентиляторы, шторы ({count} шт.).",
+        "alloff_btn_yes": "✅ Да, выключить всё",
+        "alloff_btn_no": "🚫 Отмена",
+        "alloff_cancelled": "🚫 Отменено.",
+        "alloff_done": "🔌 Выключено устройств: {count}.",
+        "alloff_error": "❌ Ошибка при массовом выключении: {err}",
     },
     "en": {
         "welcome": "👋 Hello! I'm your smart home control bot.\n\nSend /menu to open the menu.",
@@ -194,6 +210,7 @@ MESSAGES = {
         "timer_started": "⏳ Timer started for <code>{eid}</code>.\nDevice will turn off in {minutes} min.",
         "timer_fired": "⏰ Timer fired: device <code>{eid}</code> turned off after {minutes} min.",
         "timer_replaced": "♻️ Previous timer for this device was cancelled.",
+        "timer_restored": "♻️ Restored timer for <code>{eid}</code> ({minutes} min left).",
         "room_not_found": "🔍 No devices found in room «{room}».",
         "room_title": "🏠 <b>Room «{room}»:</b>",
         "all_devices_title": "📋 <b>All devices:</b>",
@@ -214,31 +231,44 @@ MESSAGES = {
             "<code>/off</code> <i>name</i> — turn off\n"
             "<code>/toggle</code> <i>name</i> — toggle\n"
             "<code>/set</code> <i>name value</i> — light brightness in % or climate temperature\n"
-            "<code>/state</code> [<i>name</i>] — status\n"
+            "<code>/state</code> [<i>name</i>] — status (all devices without a name)\n"
             "<code>/room</code> <i>room</i> — devices in room\n"
             "<code>/scene</code> <i>name</i> — activate scene\n"
             "<code>/timer</code> <i>min name</i> — turn-off timer\n"
-            "<code>/status</code> — HA status"
+            "<code>/alloff</code> — turn off all lights and switches\n"
+            "<code>/status</code> — HA status\n\n"
+            "💡 Just type a device name — I'll show its status and buttons."
         ),
         "menu_hidden": "🙈 Menu hidden. Use /menu to show it again.",
         "no_rooms": "🔍 No rooms found.",
-        "no_scenes": "🔍 No scenes not found.",
+        "no_scenes": "🔍 No scenes found.",
         "cb_expired": "⚠️ This button data is stale. Send /menu again.",
         "device_hint": "Device found. Choose an action:",
+        "search_title": "🔎 <b>Devices found: {count}</b>\n\nChoose one:",
+        "search_empty": "🔍 Nothing found for «{q}».",
+        "alloff_confirm": "⚠️ <b>Turn off EVERYTHING?</b>\n\nAll lights, switches, fans and covers will be turned off ({count} devices).",
+        "alloff_btn_yes": "✅ Yes, turn everything off",
+        "alloff_btn_no": "🚫 Cancel",
+        "alloff_cancelled": "🚫 Cancelled.",
+        "alloff_done": "🔌 Devices turned off: {count}.",
+        "alloff_error": "❌ Error during mass turn-off: {err}",
     },
 }
 
-# Путь к файлу с языками пользователей
-# В Docker: /app/data/user_langs.json
-# Локально: ./user_langs.json
+# Путь к файлам данных
+# В Docker: /app/data/
+# Локально: рядом со скриптом
 DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent))
 LANG_FILE = DATA_DIR / "user_langs.json"
+TIMERS_FILE = DATA_DIR / "timers.json"
 DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "ru")
 
 # Атрибуты, по которым определяем комнату (fallback, если нет area_registry)
 ROOM_ATTRS = ("room_name", "area", "area_name", "location")
 # Домены, которыми можно управлять кнопками
 CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "cover"}
+# Домены, выключаемые командой /alloff
+ALLOFF_DOMAINS = {"light", "switch", "fan", "cover"}
 
 
 def load_user_langs() -> dict:
@@ -483,6 +513,23 @@ class EntityRegistry:
             return s
         return self._aliases.get(s.lower())
 
+    def search(self, query: str, limit: int = 20) -> list:
+        """Ищет устройства по подстроке в имени или entity_id."""
+        q = query.strip().lower()
+        if not q:
+            return []
+        results = []
+        for eid, data in self._entities.items():
+            fname = data.get("attributes", {}).get("friendly_name", "")
+            if q in eid.lower() or q in fname.lower():
+                results.append(eid)
+        # Точное вхождение в начало имени — вперёд
+        results.sort(key=lambda e: (
+            0 if self.get_friendly_name(e).lower().startswith(q) else 1,
+            self.get_friendly_name(e).lower(),
+        ))
+        return results[:limit]
+
     def list_entities(self, domain: Optional[str] = None) -> list:
         """Возвращает список entity_id (опционально по домену)."""
         if not domain:
@@ -590,19 +637,24 @@ class HATelegramBot:
     # Максимальная длина одного сообщения Telegram (с запасом на HTML)
     MAX_MSG = 4000
 
-    def __init__(self, cfg, allowed_user_id: Optional[int]):
+    def __init__(self, cfg, allowed_users: Optional[set]):
         self.cfg = cfg
-        self.allowed_user_id = allowed_user_id
+        self.allowed_users = allowed_users  # None = разрешены все
         self.ha = HAClient(cfg.base_url, cfg.ha_token, cfg.timeout)
         self.registry = EntityRegistry(self.ha)
         # Таймеры: {(user_id, entity_id): asyncio.Task}
         self._timers: dict = {}
+        # Мета таймеров для сохранения: {(user_id, entity_id): {...}}
+        self._timer_meta: dict = {}
+        # Чаты авторизованных пользователей (для рассылки уведомлений)
+        self._known_chats: set = set()
         # Маппинг коротких токенов callback_data -> полный payload.
         # Нужен, потому что callback_data ограничена 64 байтами,
         # а entity_id / имена комнат могут быть длиннее.
         self._cb_map: dict = {}
         self._cb_seq = 0
         self.app = None
+        self._notify_runner = None
 
     # ---------- Callback-токены ----------
 
@@ -624,10 +676,20 @@ class HATelegramBot:
     # ---------- Утилиты ----------
 
     def _check_auth(self, update: Update) -> bool:
-        """Проверяет, разрешён ли доступ пользователю."""
+        """Проверяет, разрешён ли доступ пользователю, и логирует обращение."""
         user_id = update.effective_user.id if update.effective_user else None
-        if self.allowed_user_id is not None and user_id != self.allowed_user_id:
+        if self.allowed_users is not None and user_id not in self.allowed_users:
+            logger.warning("Отказано в доступе: user_id=%s", user_id)
             return False
+        # Запоминаем чат для уведомлений
+        if update.effective_chat is not None:
+            self._known_chats.add(update.effective_chat.id)
+        what = ""
+        if update.message and update.message.text:
+            what = update.message.text[:80]
+        elif update.callback_query and update.callback_query.data:
+            what = f"cb:{update.callback_query.data[:40]}"
+        logger.info("Запрос user=%s: %s", user_id, what)
         return True
 
     def _uid(self, update: Update) -> Optional[int]:
@@ -686,13 +748,11 @@ class HATelegramBot:
         """Собирает список HTML-строк в сообщение, обрезая по границам строк."""
         limit = limit or self.MAX_MSG
         text = title
-        used = 0
         for line in lines:
             if len(text) + 1 + len(line) > limit:
                 text += t(uid, "list_truncated")
                 break
             text += "\n" + line
-            used += 1
         return text
 
     async def _get_state(self, eid: str) -> Optional[dict]:
@@ -943,6 +1003,13 @@ class HATelegramBot:
         if not eid:
             return await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
 
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        text = await self._start_timer(uid, chat_id, eid, minutes)
+        await self._reply_text(update, text, "HTML")
+
+    async def _start_timer(self, uid: Optional[int], chat_id: Optional[int],
+                           eid: str, minutes: int, remaining: Optional[float] = None) -> str:
+        """Запускает (или восстанавливает) таймер выключения. Возвращает текст для пользователя."""
         key = (uid, eid)
         # Отменяем предыдущий таймер для этой пары пользователь+устройство
         old = self._timers.get(key)
@@ -951,15 +1018,21 @@ class HATelegramBot:
             old.cancel()
             replaced = True
 
-        chat_id = update.effective_chat.id if update.effective_chat else None
+        sleep_seconds = remaining if remaining is not None else minutes * 60
+        fire_at = time.time() + sleep_seconds
+        self._timer_meta[key] = {
+            "chat_id": chat_id,
+            "minutes": minutes,
+            "fire_at": fire_at,
+        }
 
         async def turn_off_later():
             try:
-                await asyncio.sleep(minutes * 60)
+                await asyncio.sleep(max(0, fire_at - time.time()))
                 await self.ha.turn_off(eid)
                 if chat_id is not None:
                     try:
-                        await context.application.bot.send_message(
+                        await self.app.bot.send_message(
                             chat_id,
                             t(uid, "timer_fired", eid=esc(eid), minutes=minutes),
                             parse_mode="HTML",
@@ -971,14 +1044,61 @@ class HATelegramBot:
             finally:
                 if self._timers.get(key) is current_task:
                     self._timers.pop(key, None)
+                    self._timer_meta.pop(key, None)
 
         current_task = asyncio.create_task(turn_off_later())
         self._timers[key] = current_task
 
+        if remaining is not None:
+            left = max(1, round(remaining / 60))
+            return t(uid, "timer_restored", eid=esc(eid), minutes=left)
         text = t(uid, "timer_started", eid=esc(eid), minutes=minutes)
         if replaced:
             text += "\n" + t(uid, "timer_replaced")
-        await self._reply_text(update, text, "HTML")
+        return text
+
+    # ---------- /alloff ----------
+    async def cmd_alloff(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /alloff — запрашивает подтверждение."""
+        if not self._check_auth(update):
+            return
+        uid = self._uid(update)
+        count = sum(
+            1 for eid in self.registry.list_entities()
+            if eid.split(".")[0] in ALLOFF_DOMAINS
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(t(uid, "alloff_btn_yes"), callback_data=self._tok("alloff:yes"))],
+            [InlineKeyboardButton(t(uid, "alloff_btn_no"), callback_data=self._tok("alloff:no"))],
+        ])
+        await self._reply_text(
+            update,
+            t(uid, "alloff_confirm", count=count),
+            "HTML",
+            reply_markup=keyboard,
+        )
+
+    async def _alloff_execute(self, query, uid: Optional[int]):
+        """Выполняет массовое выключение."""
+        try:
+            targets = [
+                eid for eid in self.registry.list_entities()
+                if eid.split(".")[0] in ALLOFF_DOMAINS
+            ]
+            results = await asyncio.gather(
+                *(self.ha.turn_off(eid) for eid in targets),
+                return_exceptions=True,
+            )
+            failed = sum(1 for r in results if isinstance(r, Exception))
+            if failed:
+                logger.warning("alloff: не выключено %d из %d", failed, len(targets))
+            await query.edit_message_text(
+                t(uid, "alloff_done", count=len(targets) - failed),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+            )
+        except Exception as e:
+            await query.edit_message_text(t(uid, "alloff_error", err=esc(str(e))))
 
     # ---------- Inline-меню ----------
     def _main_menu_inline(self, uid: Optional[int]) -> InlineKeyboardMarkup:
@@ -1263,6 +1383,11 @@ class HATelegramBot:
                 await self._show_room(query, uid, arg)
             elif action == "scene":
                 await self._apply_scene(query, uid, arg)
+            elif action == "alloff":
+                if arg == "yes":
+                    await self._alloff_execute(query, uid)
+                else:
+                    await query.edit_message_text(t(uid, "alloff_cancelled"))
             else:
                 logger.warning("Неизвестный callback: %s", data)
 
@@ -1337,7 +1462,7 @@ class HATelegramBot:
 
     # ---------- Обработка текстовых кнопок меню ----------
     async def on_menu_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обрабатывает текстовые сообщения (кнопки меню и имена устройств)."""
+        """Обрабатывает текстовые сообщения (кнопки меню, поиск устройств)."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -1358,17 +1483,37 @@ class HATelegramBot:
         elif text in (ru_map["btn_help"], en_map["btn_help"]):
             await self._reply_text(update, t(uid, "help_text"), "HTML")
         else:
-            # Обычное текстовое сообщение — ищем устройство.
-            # ВАЖНО: не выполняем действий по умолчанию, показываем статус + кнопки.
+            # Поиск устройства: точное совпадение → карточка,
+            # иначе подстрочный поиск → список кнопок
             eid = self.registry.by_id_or_alias(text)
             if eid:
                 await self._device_card(update, uid, eid)
+                return
+            matches = self.registry.search(text)
+            if not matches:
+                return await self._reply_text(update, t(uid, "search_empty", q=esc(text)))
+            if len(matches) == 1:
+                return await self._device_card(update, uid, matches[0])
+            buttons = []
+            for m in matches:
+                fname = self.registry.get_friendly_name(m)
+                buttons.append([InlineKeyboardButton(fname, callback_data=self._tok(f"card:{m}"))])
+            await self._reply_text(
+                update,
+                t(uid, "search_title", count=len(matches)),
+                "HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
 
-    async def _device_card(self, update: Update, uid: Optional[int], eid: str):
+    async def _device_card(self, update_or_query, uid: Optional[int], eid: str):
         """Показывает карточку устройства: состояние + кнопки действий."""
         s = await self._get_state(eid)
         if not s:
-            return await self._reply_text(update, t(uid, "not_found"))
+            if hasattr(update_or_query, "data"):
+                await update_or_query.edit_message_text(t(uid, "not_found"))
+            else:
+                await self._reply_text(update_or_query, t(uid, "not_found"))
+            return
         a = s.get("attributes", {})
         state = s.get("state")
         state_l = state_localized(uid, state)
@@ -1389,7 +1534,120 @@ class HATelegramBot:
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton(t(uid, "btn_on"), callback_data=self._tok(f"scene:{eid}"))]
             ])
-        await self._reply_text(update, out, "HTML", reply_markup=kb)
+        await self._send_or_edit(update_or_query, out, "HTML", kb)
+
+    # ---------- Уведомления из HA ----------
+    def notify_targets(self) -> list:
+        """Возвращает список chat_id для рассылки уведомлений."""
+        if self._known_chats:
+            return sorted(self._known_chats)
+        if self.allowed_users:
+            return sorted(self.allowed_users)
+        return []
+
+    async def _handle_notify(self, request):
+        """HTTP-обработчик POST /notify — принимает уведомления из HA."""
+        if self.cfg.notify_token:
+            auth = request.headers.get("Authorization", "")
+            if auth != f"Bearer {self.cfg.notify_token}":
+                return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+        text = body.get("text")
+        if not text or not isinstance(text, str):
+            return web.json_response({"ok": False, "error": "text required"}, status=400)
+        parse_mode = body.get("parse_mode") if body.get("parse_mode") in ("HTML", "MarkdownV2") else None
+
+        targets = body.get("chat_ids")
+        if not isinstance(targets, list) or not targets:
+            targets = self.notify_targets()
+        if not targets:
+            return web.json_response({"ok": False, "error": "no known chats"}, status=404)
+
+        sent, failed = 0, 0
+        for cid in targets:
+            try:
+                await self.app.bot.send_message(cid, text, parse_mode=parse_mode)
+                sent += 1
+            except Exception as e:
+                logger.warning("Не удалось отправить уведомление в %s: %s", cid, e)
+                failed += 1
+        return web.json_response({"ok": True, "sent": sent, "failed": failed})
+
+    async def start_notify_server(self):
+        """Запускает HTTP-приёмник уведомлений (если настроен NOTIFY_PORT)."""
+        if not self.cfg.notify_port:
+            return
+        if web is None:
+            logger.error("aiohttp не установлен — приёмник уведомлений недоступен. "
+                         "Установите: pip install aiohttp")
+            return
+        app_web = web.Application()
+        app_web.router.add_post("/notify", self._handle_notify)
+        self._notify_runner = web.AppRunner(app_web)
+        await self._notify_runner.setup()
+        site = web.TCPSite(self._notify_runner, self.cfg.notify_host, self.cfg.notify_port)
+        await site.start()
+        logger.info("Приёмник уведомлений: http://%s:%s/notify",
+                    self.cfg.notify_host, self.cfg.notify_port)
+
+    async def stop_notify_server(self):
+        """Останавливает HTTP-приёмник уведомлений."""
+        if self._notify_runner is not None:
+            await self._notify_runner.cleanup()
+            self._notify_runner = None
+
+    # ---------- Сохранение/восстановление таймеров ----------
+    def save_timers(self):
+        """Сохраняет активные таймеры в файл (вызывается при shutdown)."""
+        data = []
+        now = time.time()
+        for (uid, eid), meta in self._timer_meta.items():
+            remaining = meta["fire_at"] - now
+            if remaining <= 0:
+                continue
+            data.append({
+                "uid": uid,
+                "chat_id": meta.get("chat_id"),
+                "eid": eid,
+                "minutes": meta["minutes"],
+                "fire_at": meta["fire_at"],
+            })
+        try:
+            TIMERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            TIMERS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info("Сохранено таймеров: %d", len(data))
+        except Exception as e:
+            logger.warning("Не удалось сохранить таймеры: %s", e)
+
+    async def restore_timers(self):
+        """Восстанавливает таймеры из файла (вызывается при старте)."""
+        if not TIMERS_FILE.exists():
+            return
+        try:
+            data = json.loads(TIMERS_FILE.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Не удалось прочитать %s: %s", TIMERS_FILE, e)
+            return
+        now = time.time()
+        restored = 0
+        for item in data:
+            remaining = item.get("fire_at", 0) - now
+            if remaining <= 0:
+                continue
+            await self._start_timer(
+                item.get("uid"), item.get("chat_id"),
+                item["eid"], item["minutes"], remaining=remaining,
+            )
+            restored += 1
+        try:
+            TIMERS_FILE.unlink()
+        except Exception:
+            pass
+        if restored:
+            logger.info("Восстановлено таймеров: %d", restored)
 
 
 # ---------- Main ----------
@@ -1400,8 +1658,33 @@ class Config:
     token: Optional[str] = None
     base_url: str = "http://localhost:8123"
     ha_token: Optional[str] = None
-    allowed_user_id: Optional[int] = None
+    allowed_users: Optional[set] = None  # None = разрешены все
     timeout: int = 15
+    notify_host: str = "0.0.0.0"
+    notify_port: int = 0  # 0 = приёмник уведомлений выключен
+    notify_token: Optional[str] = None
+
+
+def parse_allowed_users() -> Optional[set]:
+    """Разбирает ALLOWED_USER_IDS (список через запятую) или ALLOWED_USER_ID (один)."""
+    raw = os.environ.get("ALLOWED_USER_IDS", "")
+    users = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            try:
+                users.add(int(part))
+            except ValueError:
+                logger.warning("Пропускаю неверный ALLOWED_USER_IDS: %r", part)
+    if users:
+        return users
+    single = os.environ.get("ALLOWED_USER_ID", "")
+    if single.strip():
+        try:
+            return {int(single)}
+        except ValueError:
+            logger.warning("Неверный ALLOWED_USER_ID: %r", single)
+    return None  # доступ открыт всем — НЕ рекомендуется
 
 
 def main():
@@ -1410,20 +1693,32 @@ def main():
         token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         base_url=os.environ.get("HA_BASE_URL", "http://localhost:8123"),
         ha_token=os.environ.get("HA_ACCESS_TOKEN", ""),
-        allowed_user_id=int(os.environ.get("ALLOWED_USER_ID") or 0) or None,
+        allowed_users=parse_allowed_users(),
+        timeout=int(os.environ.get("HA_TIMEOUT") or 15),
+        notify_host=os.environ.get("NOTIFY_HOST", "0.0.0.0"),
+        notify_port=int(os.environ.get("NOTIFY_PORT") or 0),
+        notify_token=os.environ.get("NOTIFY_TOKEN") or None,
     )
     if not cfg.token or not cfg.ha_token:
         raise SystemExit("Не заданы TELEGRAM_BOT_TOKEN и HA_ACCESS_TOKEN в файле .env")
+    if cfg.allowed_users is None:
+        logger.warning("ALLOWED_USER_IDS не задан — доступ к боту разрешён ВСЕМ!")
+    if cfg.notify_port and not cfg.notify_token:
+        logger.warning("NOTIFY_TOKEN не задан — приёмник уведомлений доступен без авторизации!")
 
-    bot = HATelegramBot(cfg, cfg.allowed_user_id)
+    bot = HATelegramBot(cfg, cfg.allowed_users)
 
     async def post_init(application: Application):
+        bot.app = application
         logger.info("Бот запущен, загружаю список устройств...")
         try:
             await bot.registry.refresh()
             logger.info("Загружено устройств: %d", len(bot.registry._entities))
         except Exception as e:
             logger.error("Ошибка загрузки: %s", e)
+
+        await bot.restore_timers()
+        await bot.start_notify_server()
 
         async def refresher():
             while True:
@@ -1437,8 +1732,10 @@ def main():
 
     async def post_shutdown(application: Application):
         logger.info("Остановка бота...")
+        bot.save_timers()
         for task in bot._timers.values():
             task.cancel()
+        await bot.stop_notify_server()
         await bot.ha.close()
 
     app = (
@@ -1464,6 +1761,7 @@ def main():
     app.add_handler(CommandHandler("scene", bot.cmd_scene))
     app.add_handler(CommandHandler("status", bot.cmd_status))
     app.add_handler(CommandHandler("timer", bot.cmd_timer))
+    app.add_handler(CommandHandler("alloff", bot.cmd_alloff))
     app.add_handler(CallbackQueryHandler(bot.callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.on_menu_text))
 

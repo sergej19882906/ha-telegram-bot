@@ -1,14 +1,38 @@
 @echo off
 chcp 65001 >nul
-title HA Telegram Bot (с логированием)
-
+setlocal
 cd /d "%~dp0"
-call venv\Scripts\activate.bat
 
-if not exist "logs" mkdir logs
-set LOGFILE=logs\bot.log
+echo ========================================
+echo   Запуск HA Telegram Bot (с логированием)
+echo ========================================
+echo.
 
-echo [INFO] Запуск бота. Логи пишутся в %LOGFILE%
-python bot.py > %LOGFILE% 2>&1
+if not exist venv\Scripts\python.exe (
+    echo [ОШИБКА] Виртуальное окружение не найдено!
+    echo Запустите сначала: install.bat
+    pause
+    exit /b 1
+)
 
+if not exist .env (
+    echo [ОШИБКА] Файл .env не найден!
+    pause
+    exit /b 1
+)
+
+if not exist logs mkdir logs
+if not exist data mkdir data
+
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set TS=%%i
+set LOGFILE=logs\bot_%TS%.log
+
+echo [INFO] Логи пишутся в: %LOGFILE%
+echo [INFO] Для остановки нажмите Ctrl+C
+echo.
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%~dp0venv\Scripts\python.exe' bot.py 2>&1 | Tee-Object -FilePath '%~dp0%LOGFILE%'"
+
+echo.
+echo [INFO] Бот остановлен (лог: %LOGFILE%^)
 pause

@@ -1,8 +1,8 @@
 FROM python:3.11-slim
 
 LABEL maintainer="sergej19882906"
-LABEL description="Telegram bot for Home Assistant"
-LABEL version="1.0"
+LABEL description="Telegram bot for Home Assistant with notifications receiver"
+LABEL version="2.0"
 LABEL org.label-schema.vcs-url="https://github.com/sergej19882906/ha-telegram-bot"
 LABEL com.centurylinklabs.watchtower.enable="true"
 LABEL com.centurylinklabs.watchtower.scope="ha-telegram-bot"
@@ -10,7 +10,8 @@ LABEL com.centurylinklabs.watchtower.scope="ha-telegram-bot"
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DATA_DIR=/app/data
 
 WORKDIR /app
 
@@ -32,9 +33,13 @@ RUN mkdir -p /app/data /app/logs && \
 
 USER botuser
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+# Персистентные данные: языки пользователей и активные таймеры
+VOLUME ["/app/data"]
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD python -c "import sys; sys.exit(0)" || exit 1
 
-EXPOSE 8080
+# Порт приёмника уведомлений из HA (NOTIFY_PORT, по умолчанию выключен)
+EXPOSE 8099
 
 CMD ["python", "bot.py"]

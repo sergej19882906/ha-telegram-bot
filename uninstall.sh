@@ -17,7 +17,7 @@ cd "$(dirname "$0")"
 echo -e "${YELLOW}[ВНИМАНИЕ] Это действие удалит:${NC}"
 echo "  - Виртуальное окружение (venv/)"
 echo "  - Логи (logs/)"
-echo "  - Файл user_langs.json"
+echo "  - Папку данных (data/): языки пользователей и активные таймеры"
 echo
 echo -e "${RED}Файлы bot.py, .env и документация будут сохранены${NC}"
 echo
@@ -26,12 +26,13 @@ read -p "Вы уверены? (y/N) " -n 1 -r
 echo
 
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    # Остановка бота, если запущен
+    # Остановка бота, если запущен (чтобы успели сохраниться таймеры)
     if pgrep -f "python.*bot.py" > /dev/null; then
         echo -e "${BLUE}[INFO] Останавливаю бота...${NC}"
         ./stop.sh
+        sleep 1
     fi
-    
+
     # Удаление systemd службы, если есть
     if [ -f "/etc/systemd/system/ha-telegram-bot.service" ]; then
         echo -e "${BLUE}[INFO] Удаляю systemd службу...${NC}"
@@ -40,14 +41,14 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         sudo rm /etc/systemd/system/ha-telegram-bot.service
         sudo systemctl daemon-reload
     fi
-    
+
     # Удаление файлов
     echo -e "${BLUE}[INFO] Удаляю файлы...${NC}"
     rm -rf venv/
     rm -rf logs/
-    rm -f user_langs.json
-    rm -f install.sh start.sh start_log.sh stop.sh uninstall.sh install_service.sh
-    
+    rm -rf data/
+    rm -f user_langs.json timers.json
+
     echo
     echo -e "${GREEN}✅ Удаление завершено${NC}"
     echo -e "${YELLOW}Для полного удаления проекта выполните: cd .. && rm -rf ha-telegram-bot${NC}"

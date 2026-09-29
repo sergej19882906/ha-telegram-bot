@@ -38,11 +38,18 @@ if ! grep -q "TELEGRAM_BOT_TOKEN=." .env || ! grep -q "HA_ACCESS_TOKEN=." .env; 
     exit 1
 fi
 
+# Предупреждение, если не задан список разрешённых пользователей
+if ! grep -qE '^(ALLOWED_USER_IDS|ALLOWED_USER_ID)=.' .env; then
+    echo -e "${YELLOW}[WARNING] Не заданы ALLOWED_USER_IDS — доступ к боту разрешён ВСЕМ!${NC}"
+    echo -e "${YELLOW}Рекомендуется указать Telegram ID в .env${NC}"
+    echo
+fi
+
 # Активация окружения
 source venv/bin/activate
 
-# Создание папки для логов
-mkdir -p logs
+# Создание папок для логов и данных
+mkdir -p logs data
 
 echo -e "${GREEN}[INFO] Запуск бота...${NC}"
 echo -e "${YELLOW}[INFO] Для остановки нажмите Ctrl+C${NC}"

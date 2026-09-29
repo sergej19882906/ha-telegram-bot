@@ -28,6 +28,21 @@ if [ -z "$CURRENT_USER" ]; then
     exit 1
 fi
 
+# Проверка, что install.sh выполнялся
+if [ ! -d "$PROJECT_DIR/venv" ]; then
+    echo -e "${RED}[ОШИБКА] Виртуальное окружение не найдено!${NC}"
+    echo -e "${YELLOW}Сначала выполните: ./install.sh${NC}"
+    exit 1
+fi
+
+# Подхват NOTIFY_PORT из .env для комментария в юните
+NOTIFY_PORT=$(grep -E '^NOTIFY_PORT=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d= -f2)
+if [ -n "$NOTIFY_PORT" ] && [ "$NOTIFY_PORT" != "0" ]; then
+    NOTIFY_NOTE="# Приёмник уведомлений слушает порт $NOTIFY_PORT (откройте его в firewall, если HA на другом хосте)"
+else
+    NOTIFY_NOTE="# Приёмник уведомлений выключен (NOTIFY_PORT=0)"
+fi
+
 echo -e "${BLUE}[INFO] Директория проекта: $PROJECT_DIR${NC}"
 echo -e "${BLUE}[INFO] Пользователь: $CURRENT_USER${NC}"
 echo
@@ -52,6 +67,7 @@ Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
+$NOTIFY_NOTE
 
 [Install]
 WantedBy=multi-user.target

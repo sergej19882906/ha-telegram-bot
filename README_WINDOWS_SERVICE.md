@@ -1,231 +1,245 @@
-# 🪟 Установка HA Telegram Bot как службы Windows
+# 🛠️ HA Telegram Bot как служба Windows
 
-Полное руководство по установке бота как фоновой службы Windows с автоматическим запуском и перезапуском при сбоях.
+Запуск бота в фоне: автостарт при загрузке системы, перезапуск при сбоях, работа без входа пользователя.
+
+Доступно два способа:
+
+| Способ | Когда выбирать |
+|---|---|
+| **A. Планировщик заданий** | Бот должен стартовать при входе пользователя. Без сторонних программ. |
+| **B. NSSM (служба Windows)** | Бот должен работать всегда, даже без входа пользователя. Рекомендуется. |
+
+---
 
 ## 📋 Содержание
-- [Преимущества службы](#-преимущества-службы)
-- [Требования](#-требования)
-- [Установка](#-установка)
-- [Управление службой](#-управление-службой)
-- [Просмотр логов](#-просмотр-логов)
-- [Обновление бота](#-обновление-бота)
-- [Удаление службы](#-удаление-службы)
+
+- [Общая подготовка](#-общая-подготовка)
+- [Способ A: Планировщик заданий](#-способ-a-планировщик-заданий)
+- [Способ B: Служба через NSSM](#-способ-b-служба-через-nssm-рекомендуется)
+- [Управление и логи](#-управление-и-логи)
 - [Решение проблем](#-решение-проблем)
-- [Альтернатива: Планировщик заданий](#-альтернатива-планировщик-заданий)
 
 ---
 
-## ✨ Преимущества службы
+## 🔧 Общая подготовка
 
-- ✅ **Автоматический запуск** при старте Windows
-- ✅ **Автоматический перезапуск** при сбоях (через 10 секунд)
-- ✅ **Работа в фоне** без видимого окна консоли
-- ✅ **Централизованное управление** через `services.msc` или командную строку
-- ✅ **Автоматическая ротация логов** (файлы не разрастаются до гигантских размеров)
+Убедитесь, что бот уже установлен и запускается вручную (см. [README_WINDOWS.md](README_WINDOWS.md)):
 
----
-
-## 📦 Требования
-
-1. Установленный Python 3.11+
-2. Выполненная первоначальная установка (`install.bat`)
-3. Заполненный файл `.env` с корректными токенами
-4. Права администратора (для установки службы)
-
----
-
-## 🚀 Установка
-
-### Шаг 1: Подготовка
-Убедитесь, что бот корректно запускается вручную:
-```cmd
-cd E:\PR\ha-telegram-bot
-start.bat
-```
-Если бот работает, остановите его (`Ctrl+C`) и переходите к следующему шагу.
-
-### Шаг 2: Установка службы
-1. Откройте папку `E:\PR\ha-telegram-bot\`
-2. Найдите файл `install_service.bat`
-3. **Нажмите правой кнопкой мыши** → **"Запуск от имени администратора"**
-4. Следуйте инструкциям на экране
-
-> 💡 **Что делает скрипт:**
-> - Автоматически скачивает утилиту NSSM (если её нет в системе)
-> - Создаёт службу с именем `HA-Telegram-Bot`
-> - Настраивает автоматический запуск и перезапуск
-> - Настраивает запись логов в папку `logs\`
-> - Запускает службу
-
-### Шаг 3: Проверка
-1. Нажмите `Win + R`, введите `services.msc` и нажмите Enter
-2. Найдите в списке службу **"HA Telegram Bot"**
-3. Убедитесь, что:
-   - Статус: **"Работает"** (Running)
-   - Тип запуска: **"Автоматически"** (Automatic)
-
----
-
-## 🎛️ Управление службой
-
-### Быстрые команды (через .bat файлы)
-
-В папке проекта есть готовые скрипты для управления:
-
-| Скрипт | Описание |
-|--------|----------|
-| `service_status.bat` | Показать текущий статус и конфигурацию службы |
-| `service_restart.bat` | Перезапустить службу (полезно после обновления `bot.py`) |
-| `service_log.bat` | Просмотреть последние 50 строк лога службы |
-| `uninstall_service.bat` | Полностью удалить службу из системы |
-
-### Командная строка (от имени администратора)
-
-```cmd
-:: Запустить службу
-net start HA-Telegram-Bot
-
-:: Остановить службу
-net stop HA-Telegram-Bot
-
-:: Перезапустить службу
-net stop HA-Telegram-Bot && net start HA-Telegram-Bot
-
-:: Проверить статус
-sc query HA-Telegram-Bot
-```
-
-### Графический интерфейс (services.msc)
-
-1. Нажмите `Win + R`
-2. Введите `services.msc`
-3. Найдите **"HA Telegram Bot"**
-4. Правый клик → **Запустить**, **Остановить** или **Перезапустить**
-
----
-
-## 📝 Просмотр логов
-
-Служба автоматически записывает все выводы (stdout и stderr) в файлы:
-
-- `E:\PR\ha-telegram-bot\logs\service.log` — основные логи и сообщения бота
-- `E:\PR\ha-telegram-bot\logs\service_error.log` — только ошибки
-
-**Особенности логирования:**
-- Файлы автоматически ротируются при достижении 10 МБ
-- Хранится до 5 резервных копий каждого файла
-- Для быстрого просмотра используйте `service_log.bat`
-
-**Просмотр в реальном времени (через PowerShell):**
 ```powershell
-Get-Content E:\PR\ha-telegram-bot\logs\service.log -Wait -Tail 50
+cd $env:USERPROFILE\Documents\ha-telegram-bot
+.\venv\Scripts\Activate.ps1
+python bot.py
+```
+
+Если бот отвечает в Telegram — можно настраивать автозапуск.
+
+Запомните пути (подставьте свои):
+
+- Проект: `C:\Users\<Имя>\Documents\ha-telegram-bot`
+- Python: `C:\Users\<Имя>\Documents\ha-telegram-bot\venv\Scripts\python.exe`
+
+---
+
+## 📅 Способ A: Планировщик заданий
+
+Бот стартует при входе пользователя в систему и перезапускается при сбоях.
+
+### Шаг 1: Создайте папку для логов
+
+```powershell
+mkdir $env:USERPROFILE\Documents\ha-telegram-bot\logs
+```
+
+### Шаг 2: Создайте задачу через PowerShell (администратор не нужен)
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "C:\Users\$env:USERNAME\Documents\ha-telegram-bot\venv\Scripts\python.exe" `
+    -Argument "bot.py" -WorkingDirectory "C:\Users\$env:USERNAME\Documents\ha-telegram-bot"
+
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERNAME"
+
+$settings = New-ScheduledTaskSettingsSet -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 0) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+
+Register-ScheduledTask -TaskName "HA Telegram Bot" -Action $action -Trigger $trigger `
+    -Settings $settings -Description "Telegram-бот для Home Assistant" -Force
+```
+
+### Шаг 3: Запустите задачу
+
+```powershell
+Start-ScheduledTask -TaskName "HA Telegram Bot"
+```
+
+Проверка статуса:
+
+```powershell
+Get-ScheduledTask -TaskName "HA Telegram Bot"
+(Get-ScheduledTask -TaskName "HA Telegram Bot").State   # Running = работает
+```
+
+### Управление
+
+```powershell
+Start-ScheduledTask  -TaskName "HA Telegram Bot"   # запуск
+Stop-ScheduledTask   -TaskName "HA Telegram Bot"   # остановка
+Unregister-ScheduledTask -TaskName "HA Telegram Bot" -Confirm:$false  # удаление
+```
+
+Или через **Панель управления → Администрирование → Планировщик заданий**.
+
+---
+
+## ⚙️ Способ B: Служба через NSSM (рекомендуется)
+
+[NSSM](https://nssm.cc) (Non-Sucking Service Manager) превращает любую программу в настоящую службу Windows: запуск до входа пользователя, автоперезапуск, перенаправление логов.
+
+### Шаг 1: Установите NSSM
+
+```powershell
+winget install nssm
+```
+
+Или вручную: скачайте с [nssm.cc/download](https://nssm.cc/download), распакуйте `nssm.exe` (из папки `win64`) в `C:\Tools` и добавьте её в PATH.
+
+Проверка:
+
+```powershell
+nssm version
+```
+
+### Шаг 2: Установите службу
+
+**Через GUI (проще всего):**
+
+```powershell
+nssm install "HATelegramBot"
+```
+
+В открывшемся окне заполните:
+
+| Поле | Значение |
+|---|---|
+| **Path** | `C:\Users\<Имя>\Documents\ha-telegram-bot\venv\Scripts\python.exe` |
+| **Startup directory** | `C:\Users\<Имя>\Documents\ha-telegram-bot` |
+| **Arguments** | `bot.py` |
+
+Вкладка **I/O**:
+
+| Поле | Значение |
+|---|---|
+| **Output (stdout)** | `C:\Users\<Имя>\Documents\ha-telegram-bot\logs\service.log` |
+| **Error (stderr)** | `C:\Users\<Имя>\Documents\ha-telegram-bot\logs\service-error.log` |
+
+(Папку `logs` создайте заранее: `mkdir logs`.)
+
+Вкладка **Details**:
+
+- **Display name:** `HA Telegram Bot`
+- **Description:** `Telegram-бот для управления Home Assistant`
+- **Startup type:** `Automatic`
+
+Нажмите **Install service**.
+
+**Или полностью через командную строку:**
+
+```powershell
+$dir = "C:\Users\$env:USERNAME\Documents\ha-telegram-bot"
+nssm install "HATelegramBot" "$dir\venv\Scripts\python.exe" "bot.py"
+nssm set "HATelegramBot" AppDirectory "$dir"
+nssm set "HATelegramBot" AppStdout "$dir\logs\service.log"
+nssm set "HATelegramBot" AppStderr "$dir\logs\service-error.log"
+nssm set "HATelegramBot" AppRotateFiles 1
+nssm set "HATelegramBot" AppRotateBytes 10485760
+nssm set "HATelegramBot" Start SERVICE_AUTO_START
+nssm set "HATelegramBot" Description "Telegram-бот для управления Home Assistant"
+```
+
+### Шаг 3: Запустите службу
+
+```powershell
+nssm start "HATelegramBot"
 ```
 
 ---
 
-## 🔄 Обновление бота
+## 🎛️ Управление и логи
 
-Если вы изменили код `bot.py` или обновили зависимости:
+### Планировщик заданий
 
-### Способ 1: Через скрипт (рекомендуется)
-```cmd
-service_restart.bat
+```powershell
+Start-ScheduledTask -TaskName "HA Telegram Bot"
+Stop-ScheduledTask  -TaskName "HA Telegram Bot"
 ```
 
-### Способ 2: Вручную
-1. Остановите службу: `net stop HA-Telegram-Bot`
-2. Замените файл `bot.py` на новую версию
-3. (Опционально) Обновите зависимости:
-   ```cmd
-   cd E:\PR\ha-telegram-bot
-   venv\Scripts\activate
-   pip install --upgrade -r requirements.txt
-   ```
-4. Запустите службу: `net start HA-Telegram-Bot`
+Логи пишутся в журнал событий: **Просмотр событий → Журналы приложений и служб → Microsoft → Windows → TaskScheduler**.
+
+### Служба NSSM
+
+```powershell
+nssm start    "HATelegramBot"   # запуск
+nssm stop     "HATelegramBot"   # остановка (мягкая, таймеры сохранятся)
+nssm restart  "HATelegramBot"   # перезапуск
+nssm status   "HATelegramBot"   # статус
+nssm remove   "HATelegramBot" confirm  # удаление службы
+```
+
+Логи (если настроены в I/O):
+
+```powershell
+Get-Content "$env:USERPROFILE\Documents\ha-telegram-bot\logs\service.log" -Wait -Tail 50
+```
+
+Общие команды Windows для службы:
+
+```powershell
+Get-Service "HATelegramBot"
+Stop-Service "HATelegramBot"   # штатная остановка
+```
+
+> ✅ **Таймеры:** при штатной остановке (NSSM stop / Stop-Service) бот успевает сохранить активные таймеры в `data\timers.json` и восстановит их при следующем запуске.
 
 ---
 
-## 🗑️ Удаление службы
+## 🔄 Обновление
 
-Если вы хотите полностью удалить службу из системы:
-
-1. Откройте папку `E:\PR\ha-telegram-bot\`
-2. Найдите файл `uninstall_service.bat`
-3. **Запустите от имени администратора**
-4. Подтвердите удаление, нажав `Y`
-
-> ⚠️ **Важно:** Это удалит только службу Windows. Файлы проекта (`bot.py`, `.env`, `venv/`) останутся на месте. Для полного удаления проекта удалите папку `E:\PR\ha-telegram-bot\` вручную после удаления службы.
+```powershell
+cd $env:USERPROFILE\Documents\ha-telegram-bot
+nssm stop "HATelegramBot"        # или Stop-ScheduledTask -TaskName "HA Telegram Bot"
+git pull
+.\venv\Scripts\Activate.ps1
+pip install --upgrade -r requirements.txt
+Deactivate
+nssm start "HATelegramBot"       # или Start-ScheduledTask -TaskName "HA Telegram Bot"
+```
 
 ---
 
 ## 🔧 Решение проблем
 
-### Ошибка: "Требуются права администратора"
-**Решение:** Всегда запускайте `install_service.bat`, `uninstall_service.bat` и `service_restart.bat` **от имени администратора** (правый клик → "Запуск от имени администратора").
-
-### Служба установлена, но не запускается
-**Причина:** Чаще всего проблема в неверных данных в `.env` или отсутствии прав на чтение файлов.
-
-**Решение:**
-1. Проверьте файл `logs\service_error.log` — там будет точная причина ошибки
-2. Убедитесь, что в `.env` заполнены `TELEGRAM_BOT_TOKEN` и `HA_ACCESS_TOKEN`
-3. Убедитесь, что путь к проекту не содержит кириллицы или специальных символов
-
-### Ошибка: "NSSM не найден"
-**Решение:** Скрипт `install_service.bat` пытается скачать NSSM автоматически. Если это не удалось из-за брандмауэра:
-1. Скачайте NSSM вручную: https://nssm.cc/download
-2. Распакуйте архив
-3. Скопируйте файл `nssm.exe` из папки `win64` в `E:\PR\ha-telegram-bot\`
-4. Повторите запуск `install_service.bat`
-
-### Бот запускается, но сразу останавливается
-**Причина:** Ошибка в коде или конфигурации, которую NSSM фиксирует и пытается перезапустить.
-
-**Решение:**
-1. Откройте `logs\service_error.log`
-2. Найдите последнюю ошибку (обычно это `TELEGRAM_BOT_TOKEN and HA_ACCESS_TOKEN are required` или ошибка импорта)
-3. Исправьте проблему и перезапустите службу
-
-### Логи не записываются
-**Решение:** Убедитесь, что у пользователя, от имени которого работает служба (обычно `Local System`), есть права на запись в папку `E:\PR\ha-telegram-bot\logs\`. По умолчанию NSSM создаёт эту папку автоматически, но если вы перемещали проект, создайте папку `logs` вручную.
+| Проблема | Решение |
+|---|---|
+| Служба стартует и сразу останавливается | Смотрите `logs\service-error.log` — чаще всего не заполнен `.env` или неверный токен |
+| `nssm` не распознаётся | Добавьте папку с `nssm.exe` в PATH или указывайте полный путь: `C:\Tools\nssm.exe install ...` |
+| Служба не стартует с ошибкой 1073/1072 | Служба уже существует: `nssm remove "HATelegramBot" confirm` и установите заново |
+| Бот работает, но не отвечает | Ваш ID не в `ALLOWED_USER_IDS` — обновите `.env` и перезапустите службу |
+| HA не достукивается до `:8099` | Разрешите порт в брандмауэре и проверьте, что `NOTIFY_PORT` в `.env` совпадает с открытым портом |
+| Лог-файлы не создаются | Проверьте, что папка `logs` существует и у службы есть права на запись |
+| Порт 8099 занят | `netstat -ano | findstr :8099` — смените `NOTIFY_PORT` в `.env` |
 
 ---
 
-## 🔄 Альтернатива: Планировщик заданий Windows
+## ✅ Итог
 
-Если вы не хотите использовать сторонние утилиты (NSSM), можно настроить автозапуск через встроенный Планировщик заданий.
+| | Планировщик (A) | NSSM-служба (B) |
+|---|---|---|
+| Старт без входа пользователя | ❌ | ✅ |
+| Перезапуск при сбое | ✅ | ✅ |
+| Штатная остановка (сохранение таймеров) | ✅ | ✅ |
+| Зависимости | нет | nssm.exe (один файл) |
 
-**Недостатки этого метода:**
-- ❌ Нет автоматического перезапуска при сбоях
-- ❌ Менее удобное управление логами
-- ❌ Сложнее настроить скрытый запуск
-
-**Инструкция:**
-1. Нажмите `Win + R`, введите `taskschd.msc`
-2. В правой панели нажмите **"Создать простую задачу..."**
-3. **Имя:** `HA Telegram Bot`
-4. **Триггер:** "При запуске компьютера" или "При входе в систему"
-5. **Действие:** "Запустить программу"
-6. **Программа или сценарий:** `E:\PR\ha-telegram-bot\venv\Scripts\python.exe`
-7. **Добавить аргументы:** `E:\PR\ha-telegram-bot\bot.py`
-8. **Начать в:** `E:\PR\ha-telegram-bot\`
-9. На последней странице отметьте галочку **"Открыть окно свойств задачи..."**
-10. В свойствах задачи:
-    - Вкладка **"Общие"**: отметьте **"Выполнять с наивысшими правами"**
-    - Вкладка **"Общие"**: выберите **"Выполнять независимо от регистрации пользователя"** (для работы в фоне)
-11. Нажмите **ОК** и введите пароль администратора.
+**Приятного использования! 🏠✨**
 
 ---
 
-## 📞 Поддержка
-
-Если вы столкнулись с проблемой, которой нет в этом руководстве:
-
-1. Проверьте файл `logs\service_error.log` — там часто есть точное описание ошибки
-2. Попробуйте запустить бота вручную через `start.bat` — если он работает вручную, но не как служба, проблема в правах доступа или путях
-3. Создайте issue в репозитории GitHub с приложенным фрагментом лога ошибки
-
----
-
-**Документация актуальна на сентябрь 2026 года.**
-**Версия бота: 1.0**
+*Документация актуальна на сентябрь 2026 года. Версия бота: 2.0*

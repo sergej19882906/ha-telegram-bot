@@ -1,6 +1,30 @@
-# 🐧 Инструкция по установке HA Telegram Bot на Linux
+# 🤖 HA Telegram Bot
 
-Полная инструкция по установке, запуску и настройке бота на Linux-системах.
+Telegram-бот для управления [Home Assistant](https://www.home-assistant.io/): устройства, сцены, комнаты, таймеры и уведомления из HA в Telegram.
+
+---
+
+## ✨ Возможности
+
+- 🎛 **Управление устройствами** — включение/выключение/переключение света, розеток, вентиляторов, штор (по командам, inline-кнопкам и текстовому поиску)
+- 🌡 **Установка значений** — яркость света в %, температура термостатов (`/set`)
+- 🏠 **Комнаты** — настоящие area из Home Assistant (area_registry), fallback на атрибуты устройств
+- 🎬 **Сцены** — активация по имени или из меню
+- ⏳ **Таймеры** — автовыключение через N минут, **сохраняются при перезапуске бота**
+- 🚨 **Уведомления из HA** — HTTP-приёмник: любая автоматизация Home Assistant может прислать сообщение в Telegram
+- 🔎 **Поиск** — наберите часть имени устройства, бот покажет совпадения
+- 🌐 **Два языка** — русский и английский (выбор на пользователя, `/lang`)
+- 👥 **Несколько пользователей** — белый список Telegram ID
+- ✅ **Безопасность** — доступ только для разрешённых ID, токен уведомлений, экранирование HTML
+
+---
+
+## 📚 Другие инструкции
+
+- [🐳 Установка и запуск в Docker](README_DOCKER.md)
+- [🪟 Установка на Windows](README_WINDOWS.md)
+- [🛠️ Запуск как служба Windows](README_WINDOWS_SERVICE.md)
+- [🐧 Linux: детальная инструкция](README_LINUX.md)
 
 ---
 
@@ -9,9 +33,10 @@
 - [Требования](#-требования)
 - [Быстрая установка](#-быстрая-установка)
 - [Настройка](#-настройка)
+- [Команды бота](#-команды-бота)
 - [Запуск бота](#-запуск-бота)
 - [Автозапуск через systemd](#-автозапуск-через-systemd)
-- [Управление службой](#-управление-службой)
+- [Уведомления из Home Assistant](#-уведомления-из-home-assistant)
 - [Мониторинг и логи](#-мониторинг-и-логи)
 - [Обновление](#-обновление)
 - [Безопасность](#-безопасность)
@@ -23,10 +48,11 @@
 ## 📦 Требования
 
 ### Системные требования
+
 - **ОС:** Ubuntu 20.04+, Debian 11+, CentOS 8+, Fedora 35+, Arch Linux
 - **Python:** 3.11 или выше
 - **Права:** обычный пользователь для установки, root для systemd
-- **Сеть:** исходящие HTTPS-соединения (порт 443)
+- **Сеть:** исходящие HTTPS-соединения (порт 443); порт для приёмника уведомлений — если используете
 
 ### Установка Python по дистрибутивам
 
@@ -53,10 +79,7 @@ sudo pacman -S python python-pip git
 ### Шаг 1: Клонируйте репозиторий
 
 ```bash
-# Перейдите в нужную папку
-cd /opt  # или ~/projects, или любую другую
-
-# Клонируйте репозиторий
+cd /opt  # или ~/projects, или любую другую папку
 git clone https://github.com/sergej19882906/ha-telegram-bot.git
 cd ha-telegram-bot
 ```
@@ -74,18 +97,19 @@ chmod +x *.sh
 ```
 
 Скрипт автоматически:
+
 - Создаст виртуальное окружение (`venv/`)
-- Установит все зависимости Python
+- Установит все зависимости Python (включая `aiohttp` для приёмника уведомлений)
 - Создаст шаблон файла `.env`
 - Создаст папку для логов (`logs/`)
 
 ### Шаг 4: Заполните конфигурацию
 
 ```bash
+cp .env.example .env   # если .env ещё не создан
 nano .env
 ```
 
-Заполните файл:
 ```env
 # Telegram bot token (от @BotFather)
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
@@ -94,14 +118,21 @@ TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
 HA_BASE_URL=http://192.168.1.100:8123
 HA_ACCESS_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
-# Ваш Telegram ID (защита от чужих пользователей)
-ALLOWED_USER_ID=123456789
+# Разрешённые пользователи — Telegram ID через запятую
+ALLOWED_USER_IDS=123456789,987654321
 
 # Язык по умолчанию: ru или en
 DEFAULT_LANG=ru
+
+# --- Приёмник уведомлений из HA (опционально; 0 = выключен) ---
+NOTIFY_PORT=8099
+NOTIFY_HOST=0.0.0.0
+NOTIFY_TOKEN=длинная_случайная_строка
 ```
 
 Сохраните: `Ctrl+O`, `Enter`, `Ctrl+X`
+
+> ⚠️ Если `ALLOWED_USER_IDS` не задан, **доступ к боту разрешён всем**. Всегда заполняйте этот параметр!
 
 ### Шаг 5: Запустите бота
 
@@ -119,6 +150,12 @@ DEFAULT_LANG=ru
 2. Отправьте команду `/newbot`
 3. Следуйте инструкциям и скопируйте токен
 
+### Получение Telegram User ID
+
+1. Откройте [@userinfobot](https://t.me/userinfobot) в Telegram
+2. Отправьте любое сообщение
+3. Скопируйте ваш числовой ID — добавьте его в `ALLOWED_USER_IDS`
+
 ### Получение Home Assistant Access Token
 
 1. Откройте веб-интерфейс Home Assistant
@@ -126,16 +163,44 @@ DEFAULT_LANG=ru
 3. Прокрутите вниз до раздела **"Long-Lived Access Tokens"**
 4. Нажмите **"Create Token"** и скопируйте токен
 
-### Получение Telegram User ID
-
-1. Откройте [@userinfobot](https://t.me/userinfobot) в Telegram
-2. Отправьте любое сообщение
-3. Скопируйте ваш числовой ID
+> Токену нужны права на вызов сервисов и чтение состояний. Для работы комнат через area_registry права суперпользователя не обязательны, но рекомендуются.
 
 ### Защита файла .env
 
 ```bash
 chmod 600 .env
+```
+
+---
+
+## 📱 Команды бота
+
+| Команда | Действие |
+|---|---|
+| `/start` | Приветствие + кнопки меню внизу чата |
+| `/menu` | Главное inline-меню |
+| `/hide` | Скрыть кнопки меню |
+| `/lang` | Сменить язык (ru/en) |
+| `/on <имя>` | Включить устройство |
+| `/off <имя>` | Выключить устройство |
+| `/toggle <имя>` | Переключить устройство |
+| `/set <имя> <значение>` | Яркость света в % (0–100) или температура климата |
+| `/state [имя]` | Статус устройства (без имени — все устройства, живые данные) |
+| `/room <комната>` | Устройства в комнате |
+| `/scene <имя>` | Активировать сцену |
+| `/timer <мин> <имя>` | Таймер автовыключения |
+| `/alloff` | Выключить весь свет/розетки (с подтверждением) |
+| `/status` | Проверка доступности HA |
+| `/help` | Список команд |
+
+**Имена устройств** можно указывать по `entity_id` (`light.kitchen`) или по дружественному имени («Свет на кухне»). Необязательно писать точно — бот ищет по подстроке и предложит варианты.
+
+**Примеры:**
+```
+/on свет на кухне
+/set подсветка 40
+/timer 30 свет в спальне
+/room кухня
 ```
 
 ---
@@ -148,58 +213,41 @@ chmod 600 .env
 ./start.sh
 ```
 
-Бот будет работать в текущем терминале. Для остановки нажмите `Ctrl+C`.
+Для остановки нажмите `Ctrl+C`.
 
-### Вариант 2: Запуск с логированием
+### Вариант 2: С логированием в файл
 
 ```bash
 ./start_log.sh
 ```
 
-Логи будут сохраняться в файл `logs/bot_YYYYMMDD_HHMMSS.log` и одновременно выводиться в консоль.
+Логи: `logs/bot_YYYYMMDD_HHMMSS.log` + консоль.
 
-### Вариант 3: Запуск в фоне (screen)
+### Вариант 3: В фоне (screen)
 
 ```bash
-# Установите screen
-sudo apt install screen  # Ubuntu/Debian
-sudo dnf install screen  # CentOS/Fedora
-
-# Создайте сессию
+sudo apt install screen
 screen -S habot
-
-# Запустите бота
 ./start.sh
-
-# Отсоединитесь от сессии: Ctrl+A, затем D
-# Бот продолжит работать в фоне
-
-# Вернитесь к сессии:
-screen -r habot
+# Отсоединиться: Ctrl+A, затем D
+# Вернуться: screen -r habot
 ```
 
-### Вариант 4: Запуск в фоне (tmux)
+### Вариант 4: В фоне (tmux)
 
 ```bash
-# Установите tmux
 sudo apt install tmux
-sudo dnf install tmux
-
-# Создайте сессию
 tmux new -s habot
-
-# Запустите бота
 ./start.sh
-
-# Отсоединитесь: Ctrl+B, затем D
-# Вернитесь: tmux attach -t habot
+# Отсоединиться: Ctrl+B, затем D
+# Вернуться: tmux attach -t habot
 ```
 
 ---
 
 ## 🔄 Автозапуск через systemd
 
-Это **рекомендуемый способ** для продакшена. Бот будет запускаться автоматически при старте системы и перезапускаться при сбоях.
+Рекомендуемый способ для продакшена: автостарт при загрузке системы и перезапуск при сбоях.
 
 ### Установка службы
 
@@ -207,20 +255,12 @@ tmux new -s habot
 sudo ./install_service.sh
 ```
 
-Скрипт автоматически:
-- Создаст файл службы `/etc/systemd/system/ha-telegram-bot.service`
-- Включит автозапуск при старте системы
-- Запустит службу
-
-### Ручная установка systemd
-
-Если хотите настроить вручную:
+### Ручная установка (если нужно)
 
 ```bash
 sudo nano /etc/systemd/system/ha-telegram-bot.service
 ```
 
-Вставьте содержимое (замените пути и пользователя):
 ```ini
 [Unit]
 Description=HA Telegram Bot
@@ -241,95 +281,109 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-Активируйте:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable ha-telegram-bot
 sudo systemctl start ha-telegram-bot
 ```
 
----
-
-## 🎛️ Управление службой
-
-### Основные команды
+### Управление службой
 
 ```bash
-# Статус службы
-sudo systemctl status ha-telegram-bot
+sudo systemctl status ha-telegram-bot    # статус
+sudo systemctl start ha-telegram-bot     # запуск
+sudo systemctl stop ha-telegram-bot      # остановка
+sudo systemctl restart ha-telegram-bot   # перезапуск
+sudo systemctl enable ha-telegram-bot    # автозапуск вкл
+sudo systemctl disable ha-telegram-bot   # автозапуск выкл
 
-# Запуск
-sudo systemctl start ha-telegram-bot
-
-# Остановка
-sudo systemctl stop ha-telegram-bot
-
-# Перезапуск
-sudo systemctl restart ha-telegram-bot
-
-# Отключить автозапуск
-sudo systemctl disable ha-telegram-bot
-
-# Включить автозапуск
-sudo systemctl enable ha-telegram-bot
-```
-
-### Быстрая проверка
-
-```bash
-# Работает ли бот?
+# Быстрая проверка
 systemctl is-active ha-telegram-bot
-
-# Включён ли автозапуск?
 systemctl is-enabled ha-telegram-bot
 ```
 
 ---
 
+## 🚨 Уведомления из Home Assistant
+
+Бот поднимает HTTP-приёмник (порт `NOTIFY_PORT`), куда Home Assistant может отправлять уведомления.
+
+### Настройка в Home Assistant (`configuration.yaml`)
+
+```yaml
+rest_command:
+  telegram_notify:
+    url: "http://<IP_сервера_с_ботом>:8099/notify"
+    method: POST
+    headers:
+      Authorization: "Bearer <NOTIFY_TOKEN_из_.env>"
+    content_type: application/json
+    payload: '{"text": "{{ message }}"}'
+```
+
+Перезагрузите HA: **Developer Tools → YAML → Reload rest commands**.
+
+### Использование в автоматизациях
+
+```yaml
+- alias: Уведомление о протечке
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.leak_sensor
+      to: "on"
+  actions:
+    - service: rest_command.telegram_notify
+      data:
+        message: "🚨 Протечка в ванной!"
+```
+
+### Дополнительные параметры payload
+
+```json
+{
+  "text": "<b>Жирный текст</b>",
+  "parse_mode": "HTML",
+  "chat_ids": [123456789]
+}
+```
+
+- `parse_mode` — `HTML` или `MarkdownV2` (необязательно)
+- `chat_ids` — отправка конкретным пользователям (необязательно; по умолчанию — всем, кто общался с ботом)
+
+---
+
 ## 📊 Мониторинг и логи
 
-### Просмотр логов через journalctl
+### journalctl
 
 ```bash
 # Последние 50 строк
 sudo journalctl -u ha-telegram-bot -n 50
 
-# Логи в реальном времени
+# В реальном времени
 sudo journalctl -u ha-telegram-bot -f
 
-# Логи за сегодня
+# За сегодня / период
 sudo journalctl -u ha-telegram-bot --since today
-
-# Логи за вчерашний день
-sudo journalctl -u ha-telegram-bot --since yesterday
-
-# Логи за конкретный период
-sudo journalctl -u ha-telegram-bot --since "2026-09-27 10:00:00" --until "2026-09-27 12:00:00"
+sudo journalctl -u ha-telegram-bot --since "2026-09-27 10:00" --until "2026-09-27 12:00"
 ```
 
-### Просмотр файлов логов
+В логах видно каждый запрос: `Запрос user=123456789: /on свет` — удобно для аудита.
 
-Если бот запущен через `start_log.sh`:
+### Файлы логов (при запуске через start_log.sh)
+
 ```bash
-# Список всех логов
 ls -lh logs/
-
-# Просмотр последнего лога
 tail -f logs/bot_*.log
-
-# Поиск ошибок
 grep -i error logs/bot_*.log
 ```
 
 ### Ротация логов
 
-Для автоматической ротации логов создайте файл `/etc/logrotate.d/ha-telegram-bot`:
-
 ```bash
 sudo nano /etc/logrotate.d/ha-telegram-bot
 ```
 
-Вставьте:
 ```
 /opt/ha-telegram-bot/logs/*.log {
     daily
@@ -346,270 +400,150 @@ sudo nano /etc/logrotate.d/ha-telegram-bot
 
 ## 🔄 Обновление
 
-### Автоматическое обновление
-
 ```bash
-# Остановите службу
 sudo systemctl stop ha-telegram-bot
-
-# Перейдите в папку проекта
 cd /opt/ha-telegram-bot
-
-# Обновите код
 git pull
-
-# Обновите зависимости
 source venv/bin/activate
 pip install --upgrade -r requirements.txt
 deactivate
-
-# Запустите снова
 sudo systemctl start ha-telegram-bot
-
-# Проверьте статус
 sudo systemctl status ha-telegram-bot
-```
-
-### Обновление только зависимостей
-
-```bash
-sudo systemctl stop ha-telegram-bot
-source venv/bin/activate
-pip install --upgrade "python-telegram-bot>=21" httpx pydantic python-dotenv
-deactivate
-sudo systemctl start ha-telegram-bot
 ```
 
 ---
 
 ## 🛡️ Безопасность
 
-### 1. Ограничьте права доступа к `.env`
-
-```bash
-chmod 600 .env
-```
-
-### 2. Запускайте от отдельного пользователя (не root)
-
-```bash
-# Создайте пользователя для бота
-sudo useradd -r -s /bin/false habotuser
-
-# Измените владельца папки
-sudo chown -R habotuser:habotuser /opt/ha-telegram-bot
-
-# Обновите systemd файл (User=habotuser)
-sudo nano /etc/systemd/system/ha-telegram-bot.service
-# Измените строку User=ваш_пользователь на User=habotuser
-
-sudo systemctl daemon-reload
-sudo systemctl restart ha-telegram-bot
-```
-
-### 3. Настройте firewall
-
-Бот работает только с исходящими соединениями, но для явного разрешения:
-
-**UFW (Ubuntu/Debian):**
-```bash
-sudo ufw allow out 443/tcp  # HTTPS для Telegram API
-sudo ufw allow out to 192.168.1.100 port 8123  # Home Assistant
-```
-
-**firewalld (CentOS/Fedora):**
-```bash
-sudo firewall-cmd --permanent --add-service=https
-sudo firewall-cmd --reload
-```
-
-### 4. Проверка открытых портов
-
-```bash
-# Бот НЕ должен слушать никаких портов (он только исходящий)
-sudo netstat -tulpn | grep python
-```
+1. **`.env` только для владельца:** `chmod 600 .env`
+2. **Отдельный пользователь, не root:**
+   ```bash
+   sudo useradd -r -s /bin/false habotuser
+   sudo chown -R habotuser:habotuser /opt/ha-telegram-bot
+   # в systemd-файле: User=habotuser
+   sudo systemctl daemon-reload
+   sudo systemctl restart ha-telegram-bot
+   ```
+3. **Всегда задавайте `ALLOWED_USER_IDS`** — иначе бот доступен всем.
+4. **Всегда задавайте `NOTIFY_TOKEN`**, если включён приёмник уведомлений — иначе любой в сети сможет слать сообщения от имени бота.
+5. **Firewall** — бот сам ничего не слушает, кроме порта уведомлений:
+   ```bash
+   sudo ufw allow out 443/tcp                                   # Telegram API
+   sudo ufw allow out to 192.168.1.100 port 8123                # Home Assistant
+   sudo ufw allow from 192.168.1.100 to any port 8099           # приёмник (только с HA)
+   ```
+6. **Проверка открытых портов:**
+   ```bash
+   sudo ss -tulpn | grep python
+   ```
 
 ---
 
 ## 🗑️ Удаление
 
-### Полное удаление
-
 ```bash
-./uninstall.sh
+./uninstall.sh        # venv, логи, user_langs.json, systemd-служба
+cd .. && rm -rf ha-telegram-bot   # полное удаление проекта
 ```
 
-Скрипт удалит:
-- Виртуальное окружение (`venv/`)
-- Логи (`logs/`)
-- Файл `user_langs.json`
-- Systemd службу (если установлена)
-
-Файлы `bot.py`, `.env` и документация будут сохранены.
-
-### Полное удаление проекта
-
-```bash
-./uninstall.sh
-cd ..
-rm -rf ha-telegram-bot
-```
+Файлы `bot.py`, `.env` и документация сохраняются при `./uninstall.sh`. Таймеры хранятся в `data/timers.json` — удалите его при полном удалении.
 
 ---
 
 ## 🔧 Решение проблем
 
-### Ошибка: `python3: command not found`
-
-**Решение:** Установите Python 3:
-```bash
-sudo apt install python3 python3-pip python3-venv  # Ubuntu/Debian
-sudo dnf install python3 python3-pip              # CentOS/Fedora
-```
-
-### Ошибка: `venv/bin/activate: No such file or directory`
-
-**Решение:** Запустите установку:
-```bash
-./install.sh
-```
-
-### Ошибка: `Permission denied` при запуске скриптов
-
-**Решение:** Сделайте скрипты исполняемыми:
-```bash
-chmod +x *.sh
-```
-
-### Бот не запускается через systemd
-
-**Проверка:**
-```bash
-# Статус службы
-sudo systemctl status ha-telegram-bot
-
-# Подробные логи
-sudo journalctl -u ha-telegram-bot -n 100 --no-pager
-```
-
-**Частые причины:**
-1. Неверный путь в `WorkingDirectory` или `ExecStart`
-2. Неправильный пользователь в `User=`
-3. Не заполнен `.env` файл
-
-### Ошибка: `Cannot send a request, as the client has been closed`
-
-**Решение:** Обновите зависимости:
-```bash
-source venv/bin/activate
-pip install --upgrade "python-telegram-bot>=21" httpx pydantic python-dotenv
-```
-
-### Бот работает, но не отвечает на команды
-
-**Причина:** Ваш Telegram ID не совпадает с `ALLOWED_USER_ID`.
-
-**Решение:**
-1. Узнайте свой ID через [@userinfobot](https://t.me/userinfobot)
-2. Обновите `ALLOWED_USER_ID` в файле `.env`
-3. Перезапустите бота: `sudo systemctl restart ha-telegram-bot`
-
-### Высокое использование памяти
-
-**Решение:** Увеличьте интервал обновления в `bot.py`:
-```python
-# Найдите строку:
-await asyncio.sleep(60)
-# Измените на:
-await asyncio.sleep(300)  # 5 минут вместо 1
-```
+| Проблема | Решение |
+|---|---|
+| `ModuleNotFoundError: No module named 'aiohttp'` | `source venv/bin/activate && pip install -r requirements.txt` |
+| `python3: command not found` | `sudo apt install python3 python3-pip python3-venv` |
+| `venv/bin/activate: No such file or directory` | Запустите `./install.sh` |
+| `Permission denied` при запуске скриптов | `chmod +x *.sh` |
+| Бот молчит / не отвечает | Ваш ID не в `ALLOWED_USER_IDS`. Проверьте через @userinfobot, обновите `.env`, `sudo systemctl restart ha-telegram-bot` |
+| Бот не стартует через systemd | `sudo journalctl -u ha-telegram-bot -n 100 --no-pager` — проверьте пути в `WorkingDirectory`/`ExecStart`, пользователя `User=` и заполненность `.env` |
+| `Cannot send a request, as the client has been closed` | `source venv/bin/activate && pip install --upgrade "python-telegram-bot>=21" httpx` |
+| Ошибка `401` от HA | Неверный/просроченный `HA_ACCESS_TOKEN` — создайте новый long-lived token |
+| Комнаты не находятся | Убедитесь, что у устройств в HA назначены areas (**Настройки → Области и зоны**). Без area_registry используются атрибуты `room_name`/`area`/`area_name`/`location` |
+| «Данные кнопки устарели» | Кнопки живут до перезапуска бота — отправьте `/menu` заново |
+| Порт 8099 занят / приёмник не стартует | Проверьте `sudo ss -tulpn | grep 8099`, смените `NOTIFY_PORT` |
+| Таймеры не срабатывают после рестарта | Проверьте права на файл `data/timers.json` (должен быть доступен пользователю службы) |
+| Высокое потребление памяти | Увеличьте интервал обновления в `bot.py`: `await asyncio.sleep(60)` → `await asyncio.sleep(300)` |
 
 ---
 
-## 📁 Структура файлов на Linux
+## 📁 Структура файлов
 
 ```
 /opt/ha-telegram-bot/
 ├── bot.py                    # Основной файл бота
-├── .env                      # Конфигурация (права 600)
+├── .env                      # Конфигурация (права 600; создаётся из .env.example)
+├── .env.example              # Шаблон конфигурации со всеми переменными
+├── .gitignore                # Исключения для git (.env, venv, логи, data)
 ├── requirements.txt          # Зависимости Python
-├── README.md                 # Основная документация
-├── README_LINUX.md           # Эта инструкция
-├── install.sh                # Скрипт установки
-├── start.sh                  # Скрипт запуска
+├── README.md                 # Эта документация
+├── install.sh                # Установка
+├── start.sh                  # Запуск
 ├── start_log.sh              # Запуск с логированием
-├── stop.sh                   # Скрипт остановки
-├── uninstall.sh              # Скрипт удаления
-├── install_service.sh        # Установка systemd службы
+├── stop.sh                   # Остановка
+├── uninstall.sh              # Удаление
+├── install_service.sh        # Установка systemd-службы
 ├── venv/                     # Виртуальное окружение (авто)
-└── logs/                     # Логи (авто)
-    └── bot_YYYYMMDD_HHMMSS.log
+├── logs/                     # Логи (авто)
+├── data/                     # Данные (авто; в Docker: /app/data)
+│   ├── user_langs.json       # Языки пользователей
+│   └── timers.json           # Активные таймеры (при shutdown)
+└── Dockerfile                # Сборка Docker-образа
 ```
-
----
-
-## 🔗 Полезные ссылки
-
-- [Документация Home Assistant](https://www.home-assistant.io/docs/)
-- [Документация python-telegram-bot](https://docs.python-telegram-bot.org/)
-- [Systemd для начинающих](https://www.digitalocean.com/community/tutorials/systemd-essentials-working-with-services-units-and-the-journal)
-- [Linux команды для начинающих](https://linuxcommand.org/)
 
 ---
 
 ## 💡 Советы по эксплуатации
 
-### 1. Регулярно проверяйте логи
-```bash
-sudo journalctl -u ha-telegram-bot -f
-```
+- Регулярно смотрите логи: `sudo journalctl -u ha-telegram-bot -f`
+- Бэкап конфигурации: `tar -czf ha-bot-backup-$(date +%Y%m%d).tar.gz .env bot.py data/`
+- Мониторинг через cron (автоперезапуск при падении + письмо):
 
-### 2. Создайте резервную копию конфигурации
-```bash
-tar -czf ha-bot-backup-$(date +%Y%m%d).tar.gz .env bot.py
-```
-
-### 3. Мониторинг через cron
-
-Создайте скрипт проверки `check_bot.sh`:
 ```bash
 #!/bin/bash
+# check_bot.sh
 if ! systemctl is-active --quiet ha-telegram-bot; then
     echo "HA Telegram Bot не работает!" | mail -s "Alert" your@email.com
     sudo systemctl restart ha-telegram-bot
 fi
 ```
 
-Добавьте в crontab:
-```bash
-crontab -e
-# Добавьте строку (проверка каждые 5 минут)
+```
 */5 * * * * /path/to/check_bot.sh
 ```
 
-### 4. Оптимизация для слабых серверов
+- Для серверов с < 1 ГБ RAM: увеличьте интервал обновления реестра до 5–10 минут, используйте `start.sh` вместо `start_log.sh`.
 
-Если у вас мало RAM (< 1GB):
-- Увеличьте интервал обновления до 5-10 минут
-- Отключите подробное логирование
-- Используйте `start.sh` вместо `start_log.sh`
+---
+
+## 🔗 Полезные ссылки
+
+- [Документация Home Assistant](https://www.home-assistant.io/docs/)
+- [REST API Home Assistant](https://developers.home-assistant.io/docs/api/rest/)
+- [Документация python-telegram-bot](https://docs.python-telegram-bot.org/)
+- [REST Command в HA (для уведомлений)](https://www.home-assistant.io/integrations/rest_command/)
+- [Инструкция по Docker](README_DOCKER.md)
+- [Инструкция по Windows](README_WINDOWS.md) и [служба Windows](README_WINDOWS_SERVICE.md)
 
 ---
 
 ## ✅ Итог
 
-Теперь у вас есть полностью настроенный бот на Linux с:
-- ✅ Автоматической установкой зависимостей
-- ✅ Автозапуском через systemd
-- ✅ Логированием и мониторингом
-- ✅ Безопасной конфигурацией
-- ✅ Удобными скриптами управления
+Полностью настроенный бот с:
+
+- ✅ Управлением устройствами, сценами и комнатами
+- ✅ Таймерами, переживающими перезапуск
+- ✅ Уведомлениями из Home Assistant в Telegram
+- ✅ Мультиязычностью и несколькими пользователями
+- ✅ Автозапуском через systemd, логированием и мониторингом
 
 **Приятного использования! 🏠✨**
 
 ---
 
 *Документация актуальна на сентябрь 2026 года.*
-*Версия бота: 1.0*
+*Версия бота: 2.0*
 *Поддерживаемые ОС: Ubuntu 20.04+, Debian 11+, CentOS 8+, Fedora 35+, Arch Linux*
