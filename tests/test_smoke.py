@@ -48,7 +48,9 @@ class TestLocalization(unittest.TestCase):
         for lang, msgs in bot.MESSAGES.items():
             for key in ("timer_min", "device_unavailable", "search_more",
                         "timer_cancelled", "alloff_done",
-                        "testnotify_text", "testnotify_sent", "testnotify_failed"):
+                        "testnotify_text", "testnotify_sent", "testnotify_failed",
+                        "testnotify_usage", "testnotify_ok", "testnotify_timeout",
+                        "testnotify_ha_error"):
                 self.assertIn(key, msgs, f"{key} missing in {lang}")
 
     def test_fallback_to_key(self):
@@ -127,19 +129,7 @@ class TestNotifyRateLimit(unittest.IsolatedAsyncioTestCase):
 
 
 class TestTestNotify(unittest.IsolatedAsyncioTestCase):
-    async def test_command_sends_via_notify_path(self):
-        b = make_bot()
-        captured = []
-
-        class FakeBot:
-            async def send_message(self, cid, text, parse_mode=None):
-                captured.append((cid, text))
-
-        b.app = type("A", (), {"bot": FakeBot()})()
-        b._known_chats = {7}
-
-        replies = []
-
+    def _make_update(self, replies):
         class Msg:
             text = "/testnotify"
 
@@ -150,17 +140,85 @@ class TestTestNotify(unittest.IsolatedAsyncioTestCase):
         user = type("U", (), {"id": 1})()
         chat = type("C", (), {"id": 7})()
         msg = Msg()
-        update = type("Up", (), {
+        return type("Up", (), {
             "effective_user": user, "effective_chat": chat,
             "message": msg, "effective_message": msg, "callback_query": None,
         })()
 
-        await b.cmd_testnotify(update, None)
+    def _make_bot_with_app(self, captured):
+        b = make_bot()
+
+        class FakeBot:
+            async def send_message(self, cid, text, parse_mode=None):
+                captured.append((cid, text))
+
+        b.app = type("A", (), {"bot": FakeBot()})()
+        b._known_chats = {7}
+        return b
+
+    async def test_command_sends_via_notify_path(self):
+        captured = []
+        b = self._make_bot_with_app(captured)
+        await b.cmd_testnotify(self._make_update([]), type("C", (), {"args": []})())
         # Уведомление ушло через путь /notify в известный чат
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0][0], 7)
         self.assertIn("Тестовое уведомление", captured[0][1])
-        self.assertTrue(any("1 чат" in r for r in replies), replies)
+
+    async def test_roundtrip_success(self):
+        captured = []
+        b = self._make_bot_with_app(captured)
+        replies = []
+
+        async def fake_call_service(domain, service, data):
+            self.assertEqual((domain, service), ("rest_command", "telegram_notify"))
+            text = data["message"]
+
+            class Req:
+                headers = {}
+
+                async def json(self):
+                    return {"text": text}
+
+            await asyncio.sleep(0.05)  # эмуляция сетевого пути HA -> бот
+            return await b._handle_notify(Req())
+
+        b.ha.call_service = fake_call_service
+        await b.cmd_testnotify(
+            self._make_update(replies), type("C", (), {"args": ["telegram_notify"]})()
+        )
+        self.assertTrue(any("Цепочка HA → бот → Telegram работает" in r for r in replies), replies)
+        self.assertEqual(len(captured), 1)  # уведомление дошло до чата
+        self.assertIsNone(b._pending_roundtrip)
+
+    async def test_roundtrip_timeout(self):
+        b = self._make_bot_with_app([])
+        b.TESTNOTIFY_TIMEOUT = 0.3
+
+        async def fake_call_service(domain, service, data):
+            return None  # HA молчит
+
+        b.ha.call_service = fake_call_service
+        replies = []
+        await b.cmd_testnotify(
+            self._make_update(replies), type("C", (), {"args": ["telegram_notify"]})()
+        )
+        self.assertTrue(any("Таймаут" in r for r in replies), replies)
+        self.assertIsNone(b._pending_roundtrip)
+
+    async def test_roundtrip_ha_error(self):
+        b = self._make_bot_with_app([])
+
+        async def fake_call_service(domain, service, data):
+            raise bot.HAError("404 Not Found")  # сервиса нет в HA
+
+        b.ha.call_service = fake_call_service
+        replies = []
+        await b.cmd_testnotify(
+            self._make_update(replies), type("C", (), {"args": ["no_such_cmd"]})()
+        )
+        self.assertTrue(any("rest_command.no_such_cmd" in r for r in replies), replies)
+        self.assertIsNone(b._pending_roundtrip)
 
 
 class TestReplySplit(unittest.IsolatedAsyncioTestCase):

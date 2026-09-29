@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -177,7 +178,7 @@ MESSAGES = {
             "<code>/timers</code> — список и отмена таймеров\n"
             "<code>/alloff</code> — выключить весь свет и розетки\n"
             "<code>/status</code> — статус HA\n"
-            "<code>/testnotify</code> — проверить уведомления из HA\n\n"
+            "<code>/testnotify</code> [rest_command] — проверить уведомления (полный круг через HA)\n\n"
             "💡 Просто напишите имя устройства — покажу его статус и кнопки."
         ),
         "menu_hidden": "🙈 Меню скрыто. Используйте /menu, чтобы вернуть.",
@@ -197,6 +198,10 @@ MESSAGES = {
         "testnotify_text": "🧪 Тестовое уведомление из Home Assistant. Если вы видите это сообщение — цепочка уведомлений работает.",
         "testnotify_sent": "✅ Тестовое уведомление отправлено в {count} чат(ов). Проверьте, что оно пришло.",
         "testnotify_failed": "❌ Не удалось отправить тестовое уведомление: {err}",
+        "testnotify_usage": "⚠️ Использование:\n/testnotify — проверка доставки бот → Telegram\n/testnotify <имя> — полный круг через rest_command в HA\n(имя команды из configuration.yaml, например: /testnotify telegram_notify)",
+        "testnotify_ha_error": "❌ Не удалось вызвать rest_command.{name} в HA: {err}\nПроверьте имя команды и доступность HA.",
+        "testnotify_ok": "✅ Цепочка HA → бот → Telegram работает!\nКруг выполнен за {secs} с. Уведомление доставлено в {count} чат(ов).",
+        "testnotify_timeout": "❌ Таймаут ({secs} с): HA вызвал rest_command, но уведомление не дошло до бота.\nПроверьте url в rest_command (http://{host}:{port}/notify), Bearer NOTIFY_TOKEN и сеть HA → сервер бота.",
     },
     "en": {
         "welcome": "👋 Hello! I'm your smart home control bot.\n\nSend /menu to open the menu.",
@@ -283,7 +288,7 @@ MESSAGES = {
             "<code>/timers</code> — list and cancel timers\n"
             "<code>/alloff</code> — turn off all lights and switches\n"
             "<code>/status</code> — HA status\n"
-            "<code>/testnotify</code> — test notifications from HA\n\n"
+            "<code>/testnotify</code> [rest_command] — test notifications (full round-trip via HA)\n\n"
             "💡 Just type a device name — I'll show its status and buttons."
         ),
         "menu_hidden": "🙈 Menu hidden. Use /menu to show it again.",
@@ -303,6 +308,10 @@ MESSAGES = {
         "testnotify_text": "🧪 Test notification from Home Assistant. If you see this message, the notification chain works.",
         "testnotify_sent": "✅ Test notification sent to {count} chat(s). Please confirm it arrived.",
         "testnotify_failed": "❌ Failed to send test notification: {err}",
+        "testnotify_usage": "⚠️ Usage:\n/testnotify — check delivery bot → Telegram\n/testnotify <name> — full round-trip via rest_command in HA\n(command name from configuration.yaml, e.g.: /testnotify telegram_notify)",
+        "testnotify_ha_error": "❌ Failed to call rest_command.{name} in HA: {err}\nCheck the command name and HA availability.",
+        "testnotify_ok": "✅ HA → bot → Telegram chain works!\nRound-trip completed in {secs} s. Notification delivered to {count} chat(s).",
+        "testnotify_timeout": "❌ Timeout ({secs} s): HA called rest_command, but the notification never reached the bot.\nCheck the rest_command url (http://{host}:{port}/notify), Bearer NOTIFY_TOKEN and the network HA → bot server.",
     },
 }
 
@@ -506,6 +515,10 @@ class HAClient:
             "/api/services/scene/turn_on",
             {"entity_id": scene_id}
         )
+
+    async def call_service(self, domain: str, service: str, data: dict):
+        """Вызывает сервис HA (например, rest_command/telegram_notify)."""
+        return await self.post_json(f"/api/services/{domain}/{service}", data)
 
 
 class EntityRegistry:
@@ -786,6 +799,8 @@ class HATelegramBot:
     MAX_MSG = 4000
     # Максимум запросов к /notify в минуту (защита от спама через бота)
     NOTIFY_RATE_LIMIT = 20
+    # Сколько ждать колбэк от HA в /testnotify <rest_command>, секунды
+    TESTNOTIFY_TIMEOUT = 15
 
     def __init__(self, cfg, allowed_users: Optional[set]):
         self.cfg = cfg
@@ -809,6 +824,8 @@ class HATelegramBot:
         self._notify_hits: list = []
         # Фоновая задача обновления реестра (создаётся в post_init)
         self._refresh_task = None
+        # Ожидание колбэка от HA для полного круга /testnotify <rest_command>
+        self._pending_roundtrip = None
 
     # ---------- Callback-токены ----------
 
@@ -1199,13 +1216,21 @@ class HATelegramBot:
     async def cmd_testnotify(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /testnotify — проверка цепочки уведомлений.
 
-        Идёт через тот же код, что и приёмник /notify: те же получатели,
-        та же отправка. Проверяет путь от бота к чатам Telegram (часть
-        HA -> бот проверяется rest_command'ом вручную).
+        Без аргументов идёт через тот же код, что и приёмник /notify:
+        те же получатели, та же отправка (нога бот → Telegram).
+
+        С аргументом <имя> выполняет полный круг: вызывает
+        rest_command.<имя> в HA, HA должен прислать уведомление обратно
+        на /notify бота — по маркеру в тексте бот засекает колбэк.
         """
         if not self._check_auth(update):
             return
         uid = self._uid(update)
+        args = context.args if context.args else []
+        if len(args) > 1:
+            return await self._reply_text(update, t(uid, "testnotify_usage"))
+        if args:
+            return await self._testnotify_roundtrip(update, uid, args[0])
 
         class _Req:
             headers = {}
@@ -1225,6 +1250,37 @@ class HATelegramBot:
         else:
             err = body.get("error", f"HTTP {resp.status}")
             await self._reply_text(update, t(uid, "testnotify_failed", err=esc(str(err))))
+
+    async def _testnotify_roundtrip(self, update: Update, uid: Optional[int], service: str):
+        """Полный круг: бот -> HA (rest_command) -> бот (/notify) -> Telegram."""
+        marker = secrets.token_hex(4)
+        text = f"{t(uid, 'testnotify_text')} [{marker}]"
+        future = asyncio.get_running_loop().create_future()
+        self._pending_roundtrip = {"marker": marker, "future": future}
+        start = time.time()
+        try:
+            try:
+                await self.ha.call_service("rest_command", service, {"message": text})
+            except Exception as e:
+                return await self._reply_text(
+                    update,
+                    t(uid, "testnotify_ha_error", name=esc(service), err=esc(str(e))),
+                )
+            try:
+                result = await asyncio.wait_for(future, timeout=self.TESTNOTIFY_TIMEOUT)
+            except asyncio.TimeoutError:
+                return await self._reply_text(
+                    update,
+                    t(uid, "testnotify_timeout", secs=self.TESTNOTIFY_TIMEOUT,
+                      host=esc(self.cfg.notify_host), port=self.cfg.notify_port),
+                )
+            elapsed = time.time() - start
+            await self._reply_text(
+                update,
+                t(uid, "testnotify_ok", secs=f"{elapsed:.1f}", count=result.get("sent", 0)),
+            )
+        finally:
+            self._pending_roundtrip = None
 
     async def cmd_timer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /timer — таймер выключения."""
@@ -1925,6 +1981,12 @@ class HATelegramBot:
             except Exception as e:
                 logger.warning("Не удалось отправить уведомление в %s: %s", cid, e)
                 failed += 1
+
+        # Колбэк для полного круга /testnotify <rest_command>
+        pending = self._pending_roundtrip
+        if pending and not pending["future"].done() and pending["marker"] in text:
+            pending["future"].set_result({"sent": sent, "failed": failed})
+
         return web.json_response({"ok": True, "sent": sent, "failed": failed})
 
     async def start_notify_server(self):
