@@ -47,7 +47,8 @@ class TestLocalization(unittest.TestCase):
     def test_required_keys(self):
         for lang, msgs in bot.MESSAGES.items():
             for key in ("timer_min", "device_unavailable", "search_more",
-                        "timer_cancelled", "alloff_done"):
+                        "timer_cancelled", "alloff_done",
+                        "testnotify_text", "testnotify_sent", "testnotify_failed"):
                 self.assertIn(key, msgs, f"{key} missing in {lang}")
 
     def test_fallback_to_key(self):
@@ -123,6 +124,43 @@ class TestNotifyRateLimit(unittest.IsolatedAsyncioTestCase):
 
         resp = await b._handle_notify(Req())
         self.assertEqual(resp.status, 429)
+
+
+class TestTestNotify(unittest.IsolatedAsyncioTestCase):
+    async def test_command_sends_via_notify_path(self):
+        b = make_bot()
+        captured = []
+
+        class FakeBot:
+            async def send_message(self, cid, text, parse_mode=None):
+                captured.append((cid, text))
+
+        b.app = type("A", (), {"bot": FakeBot()})()
+        b._known_chats = {7}
+
+        replies = []
+
+        class Msg:
+            text = "/testnotify"
+
+            async def reply_text(self, part, **kw):
+                replies.append(part)
+                return None
+
+        user = type("U", (), {"id": 1})()
+        chat = type("C", (), {"id": 7})()
+        msg = Msg()
+        update = type("Up", (), {
+            "effective_user": user, "effective_chat": chat,
+            "message": msg, "effective_message": msg, "callback_query": None,
+        })()
+
+        await b.cmd_testnotify(update, None)
+        # Уведомление ушло через путь /notify в известный чат
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0][0], 7)
+        self.assertIn("Тестовое уведомление", captured[0][1])
+        self.assertTrue(any("1 чат" in r for r in replies), replies)
 
 
 class TestReplySplit(unittest.IsolatedAsyncioTestCase):

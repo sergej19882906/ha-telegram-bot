@@ -176,7 +176,8 @@ MESSAGES = {
             "<code>/timer</code> <i>мин имя</i> — таймер выключения\n"
             "<code>/timers</code> — список и отмена таймеров\n"
             "<code>/alloff</code> — выключить весь свет и розетки\n"
-            "<code>/status</code> — статус HA\n\n"
+            "<code>/status</code> — статус HA\n"
+            "<code>/testnotify</code> — проверить уведомления из HA\n\n"
             "💡 Просто напишите имя устройства — покажу его статус и кнопки."
         ),
         "menu_hidden": "🙈 Меню скрыто. Используйте /menu, чтобы вернуть.",
@@ -193,6 +194,9 @@ MESSAGES = {
         "alloff_cancelled": "🚫 Отменено.",
         "alloff_done": "🔌 Выключено устройств: {count}.",
         "alloff_error": "❌ Ошибка при массовом выключении: {err}",
+        "testnotify_text": "🧪 Тестовое уведомление из Home Assistant. Если вы видите это сообщение — цепочка уведомлений работает.",
+        "testnotify_sent": "✅ Тестовое уведомление отправлено в {count} чат(ов). Проверьте, что оно пришло.",
+        "testnotify_failed": "❌ Не удалось отправить тестовое уведомление: {err}",
     },
     "en": {
         "welcome": "👋 Hello! I'm your smart home control bot.\n\nSend /menu to open the menu.",
@@ -278,7 +282,8 @@ MESSAGES = {
             "<code>/timer</code> <i>min name</i> — turn-off timer\n"
             "<code>/timers</code> — list and cancel timers\n"
             "<code>/alloff</code> — turn off all lights and switches\n"
-            "<code>/status</code> — HA status\n\n"
+            "<code>/status</code> — HA status\n"
+            "<code>/testnotify</code> — test notifications from HA\n\n"
             "💡 Just type a device name — I'll show its status and buttons."
         ),
         "menu_hidden": "🙈 Menu hidden. Use /menu to show it again.",
@@ -295,6 +300,9 @@ MESSAGES = {
         "alloff_cancelled": "🚫 Cancelled.",
         "alloff_done": "🔌 Devices turned off: {count}.",
         "alloff_error": "❌ Error during mass turn-off: {err}",
+        "testnotify_text": "🧪 Test notification from Home Assistant. If you see this message, the notification chain works.",
+        "testnotify_sent": "✅ Test notification sent to {count} chat(s). Please confirm it arrived.",
+        "testnotify_failed": "❌ Failed to send test notification: {err}",
     },
 }
 
@@ -1187,6 +1195,36 @@ class HATelegramBot:
         uid = self._uid(update)
         ok = await self.ha.healthcheck()
         await self._reply_text(update, t(uid, "ha_online") if ok else t(uid, "ha_offline"))
+
+    async def cmd_testnotify(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /testnotify — проверка цепочки уведомлений.
+
+        Идёт через тот же код, что и приёмник /notify: те же получатели,
+        та же отправка. Проверяет путь от бота к чатам Telegram (часть
+        HA -> бот проверяется rest_command'ом вручную).
+        """
+        if not self._check_auth(update):
+            return
+        uid = self._uid(update)
+
+        class _Req:
+            headers = {}
+
+            async def json(self):
+                return {"text": t(uid, "testnotify_text")}
+
+        resp = await self._handle_notify(_Req())
+        try:
+            body = json.loads(resp.text) if resp.text else {}
+        except Exception:
+            body = {}
+        if resp.status == 200:
+            await self._reply_text(
+                update, t(uid, "testnotify_sent", count=body.get("sent", 0))
+            )
+        else:
+            err = body.get("error", f"HTTP {resp.status}")
+            await self._reply_text(update, t(uid, "testnotify_failed", err=esc(str(err))))
 
     async def cmd_timer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /timer — таймер выключения."""
@@ -2105,6 +2143,7 @@ def main():
     app.add_handler(CommandHandler("room", bot.cmd_room))
     app.add_handler(CommandHandler("scene", bot.cmd_scene))
     app.add_handler(CommandHandler("status", bot.cmd_status))
+    app.add_handler(CommandHandler("testnotify", bot.cmd_testnotify))
     app.add_handler(CommandHandler("timer", bot.cmd_timer))
     app.add_handler(CommandHandler("timers", bot.cmd_timers))
     app.add_handler(CommandHandler("alloff", bot.cmd_alloff))
