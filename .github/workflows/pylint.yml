@@ -35,12 +35,12 @@ jobs:
       - name: Pylint — полный отчёт (informational)
         continue-on-error: true
         run: |
-          pylint bot.py \
-            --max-line-length=120 \
-            --disable=missing-docstring,fixme \
-            --score=y || true
+          pylint bot.py --score=y || true   # настройки — в .pylintrc
 
       # --- Быстрый стиль: неиспользуемые импорты/переменные ---
       # Блокирует, т.к. это почти всегда признак бага или мусора.
-      - name: Pylint — unused (fail-on-error)
-        run: pylint bot.py --disable=all --enable=W0611,W0612,W0613 --score=no
+      # Примечание: W0613 (unused-argument) намеренно исключён — обработчики
+      # python-telegram-bot обязаны принимать (update, context), даже если
+      # context не используется (подавляется через .pylintrc для полного отчёта).
+      - name: Pylint — unused imports/variables (fail-on-error)
+        run: pylint bot.py --disable=all --enable=W0611,W0612 --score=no
