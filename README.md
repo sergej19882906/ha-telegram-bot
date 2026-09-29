@@ -300,6 +300,9 @@ sudo systemctl disable ha-telegram-bot   # автозапуск выкл
 # Быстрая проверка
 systemctl is-active ha-telegram-bot
 systemctl is-enabled ha-telegram-bot
+
+# Удаление только службы (файлы проекта не трогает)
+sudo ./uninstall_service.sh
 ```
 
 ---
@@ -442,11 +445,12 @@ sudo systemctl status ha-telegram-bot
 ## 🗑️ Удаление
 
 ```bash
-./uninstall.sh        # venv, логи, user_langs.json, systemd-служба
+sudo ./uninstall.sh        # остановка, systemd-служба, venv, логи, data/
+sudo ./uninstall_service.sh # только удаление systemd-службы
 cd .. && rm -rf ha-telegram-bot   # полное удаление проекта
 ```
 
-Файлы `bot.py`, `.env` и документация сохраняются при `./uninstall.sh`. Таймеры хранятся в `data/timers.json` — удалите его при полном удалении.
+Файлы `bot.py`, `.env`, скрипты и документация сохраняются при `./uninstall.sh`.
 
 ---
 
@@ -486,6 +490,7 @@ cd .. && rm -rf ha-telegram-bot   # полное удаление проекта
 ├── stop.sh                   # Остановка
 ├── uninstall.sh              # Удаление
 ├── install_service.sh        # Установка systemd-службы
+├── uninstall_service.sh      # Удаление systemd-службы
 ├── venv/                     # Виртуальное окружение (авто)
 ├── logs/                     # Логи (авто)
 ├── data/                     # Данные (авто; в Docker: /app/data)

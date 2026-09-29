@@ -99,6 +99,7 @@ if systemctl is-active --quiet ha-telegram-bot; then
     echo "  sudo systemctl stop ha-telegram-bot      # Остановить"
     echo "  sudo systemctl restart ha-telegram-bot   # Перезапустить"
     echo "  sudo journalctl -u ha-telegram-bot -f    # Логи в реальном времени"
+    echo "  sudo ./uninstall_service.sh              # Удалить службу"
 else
     echo
     echo -e "${RED}[ОШИБКА] Служба не запустилась${NC}"

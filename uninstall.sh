@@ -18,8 +18,9 @@ echo -e "${YELLOW}[ВНИМАНИЕ] Это действие удалит:${NC}"
 echo "  - Виртуальное окружение (venv/)"
 echo "  - Логи (logs/)"
 echo "  - Папку данных (data/): языки пользователей и активные таймеры"
+echo "  - Systemd-службу (если установлена)"
 echo
-echo -e "${RED}Файлы bot.py, .env и документация будут сохранены${NC}"
+echo -e "${RED}Файлы bot.py, .env, скрипты и документация будут сохранены${NC}"
 echo
 
 read -p "Вы уверены? (y/N) " -n 1 -r
@@ -33,13 +34,10 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         sleep 1
     fi
 
-    # Удаление systemd службы, если есть
+    # Удаление systemd службы — делегируем отдельному скрипту
     if [ -f "/etc/systemd/system/ha-telegram-bot.service" ]; then
         echo -e "${BLUE}[INFO] Удаляю systemd службу...${NC}"
-        sudo systemctl stop ha-telegram-bot 2>/dev/null
-        sudo systemctl disable ha-telegram-bot 2>/dev/null
-        sudo rm /etc/systemd/system/ha-telegram-bot.service
-        sudo systemctl daemon-reload
+        SKIP_CONFIRM=1 ./uninstall_service.sh
     fi
 
     # Удаление файлов
