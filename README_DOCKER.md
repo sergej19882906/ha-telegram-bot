@@ -7,7 +7,8 @@
 ## 📋 Содержание
 
 - [Требования](#-требования)
-- [Вариант 1: docker run](#-вариант-1-docker-run)
+- [Готовый образ из GHCR](#-готовый-образ-из-github-container-registry-без-сборки)
+- [Вариант 1: docker run](#-вариант-1-docker-run-сборка-из-исходников)
 - [Вариант 2: docker-compose](#-вариант-2-docker-compose-рекомендуется)
 - [Настройка .env](#-настройка-env)
 - [Уведомления из Home Assistant](#-уведомления-из-home-assistant)
@@ -60,7 +61,27 @@ NOTIFY_TOKEN=длинная_случайная_строка
 
 ---
 
-## 🚀 Вариант 1: docker run
+## 📥 Готовый образ из GitHub Container Registry (без сборки)
+
+После каждого релиза образ публикуется автоматически в GHCR:
+
+```bash
+docker pull ghcr.io/sergej19882906/ha-telegram-bot:latest
+
+docker run -d \
+  --name ha-telegram-bot \
+  --restart unless-stopped \
+  --env-file .env \
+  -v ha_bot_data:/app/data \
+  -p 8099:8099 \
+  ghcr.io/sergej19882906/ha-telegram-bot:latest
+```
+
+> 💡 Образ в GHCR публичный — `docker login` не требуется. Тег `latest` соответствует последнему релизу; конкретную версию можно взять по тегу, например `:2.0`.
+
+---
+
+## 🚀 Вариант 1: docker run (сборка из исходников)
 
 ### Шаг 1: Соберите образ
 
@@ -104,7 +125,7 @@ docker logs -f ha-telegram-bot
 
 ## 🚀 Вариант 2: docker-compose (рекомендуется)
 
-Создайте `docker-compose.yaml` в папке проекта:
+В репозитории уже есть готовый `docker-compose.yml` (сборка из исходников):
 
 ```yaml
 services:
@@ -122,6 +143,9 @@ services:
 volumes:
   ha_bot_data:
 ```
+
+> 💡 Чтобы использовать готовый образ вместо сборки, замените `build: .` на
+> `image: ghcr.io/sergej19882906/ha-telegram-bot:latest`.
 
 Запуск и управление:
 
@@ -176,6 +200,14 @@ docker inspect -f '{{.State.Status}} {{.State.RestartCount}}' ha-telegram-bot
 
 ## 🔄 Обновление
 
+**Если используете готовый образ из GHCR:**
+```bash
+docker pull ghcr.io/sergej19882906/ha-telegram-bot:latest
+docker stop ha-telegram-bot && docker rm ha-telegram-bot
+# и запустите заново той же командой docker run (см. выше)
+```
+
+**Если собираете из исходников:**
 ```bash
 cd ha-telegram-bot
 git pull
