@@ -1,6 +1,7 @@
 # 🤖 HA Telegram Bot
 
 [![CI](https://github.com/sergej19882906/ha-telegram-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/sergej19882906/ha-telegram-bot/actions/workflows/ci.yml)
+[![Pylint](https://github.com/sergej19882906/ha-telegram-bot/actions/workflows/pylint.yml/badge.svg)](https://github.com/sergej19882906/ha-telegram-bot/actions/workflows/pylint.yml)
 
 Telegram-бот для управления [Home Assistant](https://www.home-assistant.io/): устройства, сцены, комнаты, таймеры и уведомления из HA в Telegram.
 
