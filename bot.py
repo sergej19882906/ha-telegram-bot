@@ -1,6 +1,15 @@
 """
 Telegram-бот для Home Assistant с интерактивным меню и локализацией.
 Поддержка Docker: данные сохраняются в /app/data (или DATA_DIR).
+
+Исправления (см. CHANGELOG в README):
+- Реализована команда /set (яркость света в %, температура climate)
+- Таймеры: несколько на пользователя, корректная отмена при повторном запуске
+- Комнаты через area_registry/device_registry/entity_registry (с fallback на атрибуты)
+- Callback-данные больше не обрезаются (маппинг через короткие токены)
+- Безопасное обрезание HTML-списков (по строкам, без разрыва тегов)
+- Текстовый ввод показывает статус + кнопки вместо опасного "выключить по умолчанию"
+- /state без аргументов показывает живые данные из HA, а не кеш
 """
 
 import asyncio
@@ -23,6 +32,7 @@ from telegram import (
     KeyboardButton,
     ReplyKeyboardRemove,
 )
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -84,6 +94,7 @@ MESSAGES = {
         "scene_not_found": "❌ Сцена «{name}» не найдена.",
         "empty_list": "📭 Список устройств пуст.",
         "empty_list_short": "📭 Список пуст.",
+        "list_truncated": "\n\n… (список обрезан, уточните фильтр)",
         "scene_applied": "🎬 Сцена «{name}» активирована.",
         "ha_online": "✅ Home Assistant: онлайн",
         "ha_offline": "❌ Home Assistant: недоступен",
@@ -94,8 +105,12 @@ MESSAGES = {
         "unknown": "неизвестно",
         "error": "❌ Ошибка: {err}",
         "value_set": "✅ Установлено значение: {value}.",
+        "set_usage": "⚠️ Использование: /set <имя> <значение>\nДля света — яркость в % (0–100), для климата — температура.",
+        "set_not_number": "⚠️ Значение должно быть числом, например: /set свет 50",
+        "set_unsupported": "❌ Для устройства «{name}» установка значений не поддерживается (только свет и климат).",
         "timer_started": "⏳ Таймер запущен для <code>{eid}</code>.\nУстройство выключится через {minutes} мин.",
         "timer_fired": "⏰ Таймер сработал: устройство <code>{eid}</code> выключено через {minutes} мин.",
+        "timer_replaced": "♻️ Предыдущий таймер для этого устройства отменён.",
         "room_not_found": "🔍 В комнате «{room}» устройств не найдено.",
         "room_title": "🏠 <b>Комната «{room}»:</b>",
         "all_devices_title": "📋 <b>Все устройства:</b>",
@@ -115,16 +130,18 @@ MESSAGES = {
             "<code>/on</code> <i>имя</i> — включить\n"
             "<code>/off</code> <i>имя</i> — выключить\n"
             "<code>/toggle</code> <i>имя</i> — переключить\n"
-            "<code>/set</code> <i>имя значение</i> — установить значение\n"
+            "<code>/set</code> <i>имя значение</i> — яркость света в % или температура климата\n"
             "<code>/state</code> [<i>имя</i>] — статус\n"
             "<code>/room</code> <i>комната</i> — устройства в комнате\n"
             "<code>/scene</code> <i>имя</i> — активировать сцену\n"
-            "<code>/timer</code> <i>мин имя</i> — таймер\n"
+            "<code>/timer</code> <i>мин имя</i> — таймер выключения\n"
             "<code>/status</code> — статус HA"
         ),
         "menu_hidden": "🙈 Меню скрыто. Используйте /menu, чтобы вернуть.",
         "no_rooms": "🔍 Комнаты не найдены.",
         "no_scenes": "🔍 Сцены не найдены.",
+        "cb_expired": "⚠️ Данные кнопки устарели. Отправьте /menu заново.",
+        "device_hint": "Найдено устройство. Выберите действие:",
     },
     "en": {
         "welcome": "👋 Hello! I'm your smart home control bot.\n\nSend /menu to open the menu.",
@@ -160,6 +177,7 @@ MESSAGES = {
         "scene_not_found": "❌ Scene «{name}» not found.",
         "empty_list": "📭 Device list is empty.",
         "empty_list_short": "📭 List is empty.",
+        "list_truncated": "\n\n… (list truncated, narrow the filter)",
         "scene_applied": "🎬 Scene «{name}» activated.",
         "ha_online": "✅ Home Assistant: online",
         "ha_offline": "❌ Home Assistant: offline",
@@ -170,8 +188,12 @@ MESSAGES = {
         "unknown": "unknown",
         "error": "❌ Error: {err}",
         "value_set": "✅ Value set to: {value}.",
+        "set_usage": "⚠️ Usage: /set <name> <value>\nFor lights — brightness in % (0–100), for climate — temperature.",
+        "set_not_number": "⚠️ Value must be a number, e.g.: /set light 50",
+        "set_unsupported": "❌ Setting values is not supported for «{name}» (lights and climate only).",
         "timer_started": "⏳ Timer started for <code>{eid}</code>.\nDevice will turn off in {minutes} min.",
         "timer_fired": "⏰ Timer fired: device <code>{eid}</code> turned off after {minutes} min.",
+        "timer_replaced": "♻️ Previous timer for this device was cancelled.",
         "room_not_found": "🔍 No devices found in room «{room}».",
         "room_title": "🏠 <b>Room «{room}»:</b>",
         "all_devices_title": "📋 <b>All devices:</b>",
@@ -191,16 +213,18 @@ MESSAGES = {
             "<code>/on</code> <i>name</i> — turn on\n"
             "<code>/off</code> <i>name</i> — turn off\n"
             "<code>/toggle</code> <i>name</i> — toggle\n"
-            "<code>/set</code> <i>name value</i> — set value\n"
+            "<code>/set</code> <i>name value</i> — light brightness in % or climate temperature\n"
             "<code>/state</code> [<i>name</i>] — status\n"
             "<code>/room</code> <i>room</i> — devices in room\n"
             "<code>/scene</code> <i>name</i> — activate scene\n"
-            "<code>/timer</code> <i>min name</i> — timer\n"
+            "<code>/timer</code> <i>min name</i> — turn-off timer\n"
             "<code>/status</code> — HA status"
         ),
         "menu_hidden": "🙈 Menu hidden. Use /menu to show it again.",
         "no_rooms": "🔍 No rooms found.",
-        "no_scenes": "🔍 No scenes found.",
+        "no_scenes": "🔍 No scenes not found.",
+        "cb_expired": "⚠️ This button data is stale. Send /menu again.",
+        "device_hint": "Device found. Choose an action:",
     },
 }
 
@@ -210,6 +234,11 @@ MESSAGES = {
 DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent))
 LANG_FILE = DATA_DIR / "user_langs.json"
 DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "ru")
+
+# Атрибуты, по которым определяем комнату (fallback, если нет area_registry)
+ROOM_ATTRS = ("room_name", "area", "area_name", "location")
+# Домены, которыми можно управлять кнопками
+CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "cover"}
 
 
 def load_user_langs() -> dict:
@@ -354,20 +383,30 @@ class HAClient:
             {"entity_id": entity_id, **kwargs}
         )
 
-    async def set_value(self, entity_id: str, value: float, **kwargs):
-        """Устанавливает значение (яркость, температура и т.д.)."""
+    async def set_value(self, entity_id: str, value: float):
+        """Устанавливает значение.
+
+        - light: value трактуется как яркость в процентах (0–100),
+          при value > 100 — как сырое значение 0–255.
+        - climate: температура.
+        """
         domain, _, _ = entity_id.rpartition(".")
-        service_map = {
-            "light": ("set_brightness", "brightness"),
-            "climate": ("set_temperature", "temperature"),
-        }
-        if domain not in service_map:
-            raise HAError(f"Unsupported entity type for set: {domain}")
-        svc, key = service_map[domain]
-        return await self.post_json(
-            f"/api/services/{domain}/{svc}",
-            {"entity_id": entity_id, **{key: value}}
-        )
+        if domain == "light":
+            if value <= 100:
+                brightness = round(value * 255 / 100)
+            else:
+                brightness = round(value)
+            brightness = max(0, min(255, int(brightness)))
+            return await self.post_json(
+                "/api/services/light/turn_on",
+                {"entity_id": entity_id, "brightness": brightness},
+            )
+        if domain == "climate":
+            return await self.post_json(
+                "/api/services/climate/set_temperature",
+                {"entity_id": entity_id, "temperature": value},
+            )
+        raise HAError(f"Unsupported entity type for set: {domain}")
 
     async def apply_scene(self, scene_id: str):
         """Активирует сцену."""
@@ -378,18 +417,23 @@ class HAClient:
 
 
 class EntityRegistry:
-    """Реестр устройств Home Assistant с алиасами и комнатами."""
+    """Реестр устройств Home Assistant с алиасами, комнатами и сценами."""
 
     def __init__(self, ha: HAClient):
         self.ha = ha
         self._entities: dict = {}
         self._aliases: dict = {}
+        # area_id -> название комнаты
+        self._area_names: dict = {}
+        # area_id -> [entity_id]
+        self._area_entities: dict = {}
 
     async def refresh(self):
         """Обновляет список устройств из Home Assistant."""
         states = await self.ha.get_entity_ids_by_domain()
         self._entities = states
 
+        self._aliases = {}
         for eid, data in self._entities.items():
             attrs = data.get("attributes", {})
             fname = attrs.get("friendly_name")
@@ -398,14 +442,46 @@ class EntityRegistry:
                 if alias and alias != eid.split(".")[-1].lower():
                     self._aliases[alias] = eid
 
+        await self._load_area_map()
+
+    async def _load_area_map(self):
+        """Загружает соответствие комнат (areas) и устройств из реестров HA.
+
+        Использует area_registry / device_registry / entity_registry.
+        При недоступности (старая версия HA, права токена) оставляет
+        пустой словарь — комнаты будут искаться по атрибутам (fallback).
+        """
+        self._area_names = {}
+        self._area_entities = {}
+        try:
+            areas = await self.ha.get_json("/api/config/area_registry/list")
+            devices = await self.ha.get_json("/api/config/device_registry/list")
+            ent_reg = await self.ha.get_json("/api/config/entity_registry/list")
+        except Exception as e:
+            logger.warning("area_registry недоступен (%s), комнаты — по атрибутам", e)
+            return
+
+        for a in areas:
+            aid = a.get("area_id")
+            name = a.get("name")
+            if aid and name:
+                self._area_names[aid] = name
+
+        dev_area = {d.get("id"): d.get("area_id") for d in devices if d.get("id")}
+        for e in ent_reg:
+            eid = e.get("entity_id")
+            aid = e.get("area_id") or dev_area.get(e.get("device_id"))
+            if eid and aid:
+                self._area_entities.setdefault(aid, []).append(eid)
+
     def by_id_or_alias(self, text: str) -> Optional[str]:
         """Ищет устройство по entity_id или алиасу."""
         if not text:
             return None
-        t = text.strip()
-        if t in self._entities:
-            return t
-        return self._aliases.get(t.lower())
+        s = text.strip()
+        if s in self._entities:
+            return s
+        return self._aliases.get(s.lower())
 
     def list_entities(self, domain: Optional[str] = None) -> list:
         """Возвращает список entity_id (опционально по домену)."""
@@ -414,28 +490,73 @@ class EntityRegistry:
         return sorted([k for k in self._entities if k.split(".")[0] == domain])
 
     def get_rooms(self) -> list:
-        """Получает список комнат из атрибутов устройств.
-
-        Ищет в атрибутах: room_name, area, area_name, location.
-        Корректно обрабатывает случаи, когда значение — список.
-        """
+        """Возвращает список комнат: из area_registry + из атрибутов устройств."""
         rooms = set()
+
+        # 1. Комнаты из area_registry, в которых есть устройства
+        for aid, eids in self._area_entities.items():
+            if any(eid in self._entities for eid in eids):
+                name = self._area_names.get(aid)
+                if name:
+                    rooms.add(name)
+
+        # 2. Fallback: атрибуты устройств
         for data in self._entities.values():
             attrs = data.get("attributes", {})
-            for key in ("room_name", "area", "area_name", "location"):
+            for key in ROOM_ATTRS:
                 room = attrs.get(key)
                 if room is None:
                     continue
-                # Если значение — список, берём первый элемент
                 if isinstance(room, list):
-                    if room and isinstance(room[0], str):
-                        rooms.add(room[0])
+                    if room and isinstance(room[0], str) and room[0].strip():
+                        rooms.add(room[0].strip())
                     break
-                # Если значение — строка
                 if isinstance(room, str) and room.strip():
-                    rooms.add(room)
+                    rooms.add(room.strip())
                     break
         return sorted(list(rooms))
+
+    def find_room_area_id(self, room_name: str) -> Optional[str]:
+        """Ищет area_id по названию комнаты (регистронезависимо)."""
+        target = room_name.strip().lower()
+        for aid, name in self._area_names.items():
+            if name.strip().lower() == target:
+                return aid
+        # Частичное совпадение
+        for aid, name in self._area_names.items():
+            if target in name.strip().lower():
+                return aid
+        return None
+
+    def entities_in_room(self, room_name: str) -> list:
+        """Возвращает entity_id устройств в комнате.
+
+        Сначала ищет по area_registry, затем — по атрибутам.
+        """
+        found: list = []
+
+        # 1. По area_registry
+        aid = self.find_room_area_id(room_name)
+        if aid:
+            found = [e for e in self._area_entities.get(aid, []) if e in self._entities]
+
+        # 2. Fallback / дополнение по атрибутам
+        target = room_name.strip().lower()
+        for eid, data in self._entities.items():
+            if eid in found:
+                continue
+            attrs = data.get("attributes", {})
+            for key in ROOM_ATTRS:
+                room = attrs.get(key)
+                if room is None:
+                    continue
+                if isinstance(room, list):
+                    room = room[0] if room else None
+                if isinstance(room, str) and target in room.lower():
+                    found.append(eid)
+                    break
+
+        return sorted(found)
 
     def get_scenes(self) -> list:
         """Возвращает список всех сцен."""
@@ -466,13 +587,41 @@ def get_main_keyboard(uid: Optional[int]) -> ReplyKeyboardMarkup:
 class HATelegramBot:
     """Основной класс Telegram-бота для Home Assistant."""
 
+    # Максимальная длина одного сообщения Telegram (с запасом на HTML)
+    MAX_MSG = 4000
+
     def __init__(self, cfg, allowed_user_id: Optional[int]):
         self.cfg = cfg
         self.allowed_user_id = allowed_user_id
         self.ha = HAClient(cfg.base_url, cfg.ha_token, cfg.timeout)
         self.registry = EntityRegistry(self.ha)
+        # Таймеры: {(user_id, entity_id): asyncio.Task}
         self._timers: dict = {}
+        # Маппинг коротких токенов callback_data -> полный payload.
+        # Нужен, потому что callback_data ограничена 64 байтами,
+        # а entity_id / имена комнат могут быть длиннее.
+        self._cb_map: dict = {}
+        self._cb_seq = 0
         self.app = None
+
+    # ---------- Callback-токены ----------
+
+    def _tok(self, payload: str) -> str:
+        """Создаёт короткий токен для payload callback_data."""
+        self._cb_seq += 1
+        token = f"x{self._cb_seq}"
+        self._cb_map[token] = payload
+        # Защита от неограниченного роста: вытесняем старые токены
+        if len(self._cb_map) > 3000:
+            for k in list(self._cb_map.keys())[:1000]:
+                del self._cb_map[k]
+        return token
+
+    def _resolve_tok(self, data: str) -> Optional[str]:
+        """Возвращает payload по токену (None, если токен неизвестен)."""
+        return self._cb_map.get(data)
+
+    # ---------- Утилиты ----------
 
     def _check_auth(self, update: Update) -> bool:
         """Проверяет, разрешён ли доступ пользователю."""
@@ -486,47 +635,65 @@ class HATelegramBot:
         return update.effective_user.id if update.effective_user else None
 
     async def _reply_text(self, update: Update, text: str, parse_mode: Optional[str] = None, **kwargs):
-        """Отправляет сообщение, автоматически разбивая длинные тексты."""
-        max_length = 4096
-        if len(text) <= max_length:
-            try:
-                return await update.effective_message.reply_text(
-                    text, parse_mode=parse_mode, disable_web_page_preview=True, **kwargs
-                )
-            except Exception as e:
-                logger.warning("Ошибка отправки: %s", e)
-                return None
-
-        parts = self._split_message(text, max_length)
+        """Отправляет сообщение, разбивая длинные тексты и защищаясь от битого HTML."""
+        parts = self._split_message(text, self.MAX_MSG)
         result = None
         for i, part in enumerate(parts, 1):
             try:
                 result = await update.effective_message.reply_text(
-                    part, parse_mode=parse_mode, disable_web_page_preview=True, **kwargs
+                    part, parse_mode=parse_mode,
+                    disable_web_page_preview=True, **kwargs,
                 )
-                if i < len(parts):
-                    await asyncio.sleep(0.5)
+            except BadRequest as e:
+                if parse_mode and ("entities" in str(e) or "parse" in str(e)):
+                    # Разорванный HTML — отправляем без форматирования
+                    logger.warning("Ошибка парсинга HTML, отправляю plain text: %s", e)
+                    result = await update.effective_message.reply_text(
+                        re.sub(r"<[^>]+>", "", part),
+                        disable_web_page_preview=True, **kwargs,
+                    )
+                else:
+                    logger.warning("Ошибка отправки части %d: %s", i, e)
+                    return result
             except Exception as e:
                 logger.warning("Ошибка отправки части %d: %s", i, e)
+                return result
+            if i < len(parts):
+                await asyncio.sleep(0.4)
         return result
 
     def _split_message(self, text: str, max_length: int) -> list:
-        """Разбивает сообщение на части по строкам."""
-        lines = text.split('\n')
+        """Разбивает сообщение на части по строкам (не рвёт HTML-теги внутри строк)."""
+        lines = text.split("\n")
         parts = []
-        current_part = []
+        current: list = []
         current_length = 0
         for line in lines:
             line_length = len(line) + 1
-            if current_length + line_length > max_length and current_part:
-                parts.append('\n'.join(current_part))
-                current_part = []
+            if current_length + line_length > max_length and current:
+                parts.append("\n".join(current))
+                current = []
                 current_length = 0
-            current_part.append(line)
+            current.append(line)
             current_length += line_length
-        if current_part:
-            parts.append('\n'.join(current_part))
-        return parts
+        if current:
+            parts.append("\n".join(current))
+        # Отдельная слишком длинная строка — жёстко обрезаем
+        # (защита сработает в _reply_text: plain text fallback)
+        return [p[:max_length + 200] if len(p) > max_length + 500 else p for p in parts] or [""]
+
+    def _truncate_lines(self, uid: Optional[int], title: str, lines: list, limit: int = None) -> str:
+        """Собирает список HTML-строк в сообщение, обрезая по границам строк."""
+        limit = limit or self.MAX_MSG
+        text = title
+        used = 0
+        for line in lines:
+            if len(text) + 1 + len(line) > limit:
+                text += t(uid, "list_truncated")
+                break
+            text += "\n" + line
+            used += 1
+        return text
 
     async def _get_state(self, eid: str) -> Optional[dict]:
         """Получает состояние устройства."""
@@ -535,6 +702,14 @@ class HATelegramBot:
         except Exception as e:
             logger.error("Ошибка получения состояния %s: %s", eid, e)
             return None
+
+    def _device_line(self, uid: Optional[int], eid: str, data: dict) -> str:
+        """Формирует HTML-строку состояния устройства."""
+        attrs = data.get("attributes", {})
+        state = data.get("state")
+        state_l = state_localized(uid, state, short=True)
+        fname = attrs.get("friendly_name", eid)
+        return f"<b>{esc(fname)}</b> — <code>{esc(state_l)}</code>"
 
     # ---------- Команды ----------
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -651,36 +826,68 @@ class HATelegramBot:
         except Exception as e:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
-    async def cmd_state(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /state."""
+    async def cmd_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /set — яркость света (%) или температура климата."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
-        eid = self.registry.by_id_or_alias(context.args[0]) if context.args else None
-        if eid:
-            s = await self._get_state(eid)
-            if not s:
-                return await self._reply_text(update, t(uid, "not_found"))
-            a = s.get("attributes", {})
-            state = s.get("state")
-            state_l = state_localized(uid, state)
-            out = t(uid, "current_state", name=esc(a.get('friendly_name', eid)), state=esc(state_l))
-            if a:
-                attrs_json = json.dumps(a, ensure_ascii=False, indent=1)
-                out += f"\n{t(uid, 'attrs_label')}\n<code>{esc(attrs_json)}</code>"
-            return await self._reply_text(update, out, "HTML")
-        else:
-            entities = self.registry._entities
-            if not entities:
-                return await self._reply_text(update, t(uid, "empty_list"))
-            lines = []
-            for k, s in entities.items():
-                a = s.get("attributes", {})
-                state = s.get("state")
-                state_l = state_localized(uid, state, short=True)
-                lines.append(f"<b>{esc(a.get('friendly_name', k))}</b> — <code>{esc(state_l)}</code>")
-            text = t(uid, "all_devices_title") + "\n\n" + "\n".join(lines)
-            return await self._reply_text(update, text, "HTML")
+        if len(context.args) < 2:
+            return await self._reply_text(update, t(uid, "set_usage"))
+        raw_value = context.args[-1].rstrip("%").replace(",", ".")
+        try:
+            value = float(raw_value)
+        except ValueError:
+            return await self._reply_text(update, t(uid, "set_not_number"))
+        name = " ".join(context.args[:-1])
+        eid = self.registry.by_id_or_alias(name)
+        if not eid:
+            return await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
+        domain = eid.split(".")[0]
+        if domain not in ("light", "climate"):
+            return await self._reply_text(update, t(uid, "set_unsupported", name=esc(name)))
+        try:
+            await self.ha.set_value(eid, value)
+            shown = f"{value:g}%" if domain == "light" else f"{value:g}°"
+            await self._reply_text(update, t(uid, "value_set", value=esc(shown)))
+        except HAError as e:
+            await self._reply_text(update, t(uid, "error", err=esc(str(e))))
+        except Exception as e:
+            await self._reply_text(update, t(uid, "error", err=esc(str(e))))
+
+    async def cmd_state(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /state. Без аргументов — живые данные из HA."""
+        if not self._check_auth(update):
+            return
+        uid = self._uid(update)
+        if context.args:
+            return await self._state_one(update, uid, " ".join(context.args))
+        # Все устройства — запрашиваем свежие состояния, а не кеш
+        try:
+            entities = await self.ha.get_entity_ids_by_domain()
+        except Exception as e:
+            return await self._reply_text(update, t(uid, "error", err=esc(str(e))))
+        if not entities:
+            return await self._reply_text(update, t(uid, "empty_list"))
+        lines = [self._device_line(uid, eid, data) for eid, data in entities.items()]
+        text = self._truncate_lines(uid, t(uid, "all_devices_title"), lines)
+        await self._reply_text(update, text, "HTML")
+
+    async def _state_one(self, update: Update, uid: Optional[int], name: str):
+        """Показывает подробный статус одного устройства."""
+        eid = self.registry.by_id_or_alias(name)
+        if not eid:
+            return await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
+        s = await self._get_state(eid)
+        if not s:
+            return await self._reply_text(update, t(uid, "not_found"))
+        a = s.get("attributes", {})
+        state = s.get("state")
+        state_l = state_localized(uid, state)
+        out = t(uid, "current_state", name=esc(a.get("friendly_name", eid)), state=esc(state_l))
+        if a:
+            attrs_json = json.dumps(a, ensure_ascii=False, indent=1)
+            out += f"\n{t(uid, 'attrs_label')}\n<code>{esc(attrs_json)}</code>"
+        await self._reply_text(update, out, "HTML")
 
     async def cmd_room(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /room."""
@@ -701,11 +908,12 @@ class HATelegramBot:
             return await self._reply_text(update, "⚠️ /scene <имя>")
         name = " ".join(context.args)
         eid = self.registry.by_id_or_alias(name)
-        if not eid:
+        if not eid or not eid.startswith("scene."):
             return await self._reply_text(update, t(uid, "scene_not_found", name=esc(name)))
         try:
             await self.ha.apply_scene(eid)
-            await self._reply_text(update, t(uid, "scene_applied", name=esc(name)), "HTML")
+            fname = self.registry.get_friendly_name(eid)
+            await self._reply_text(update, t(uid, "scene_applied", name=esc(fname)), "HTML")
         except HAError as e:
             await self._reply_text(update, t(uid, "error", err=esc(str(e))))
 
@@ -718,7 +926,7 @@ class HATelegramBot:
         await self._reply_text(update, t(uid, "ha_online") if ok else t(uid, "ha_offline"))
 
     async def cmd_timer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /timer."""
+        """Обработчик команды /timer — таймер выключения."""
         if not self._check_auth(update):
             return
         uid = self._uid(update)
@@ -726,32 +934,51 @@ class HATelegramBot:
             return await self._reply_text(update, "⚠️ /timer <мин> <имя>")
         try:
             minutes = int(context.args[0])
+            if minutes <= 0 or minutes > 24 * 60:
+                raise ValueError
         except ValueError:
-            return await self._reply_text(update, "⚠️ Время должно быть числом")
+            return await self._reply_text(update, "⚠️ Время должно быть числом от 1 до 1440")
         name = " ".join(context.args[1:])
         eid = self.registry.by_id_or_alias(name)
         if not eid:
             return await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
 
-        async def turn_off_later():
-            await asyncio.sleep(minutes * 60)
-            try:
-                await self.ha.turn_off(eid)
-                if update.effective_chat:
-                    await update.effective_chat.send_message(
-                        t(uid, "timer_fired", eid=esc(eid), minutes=minutes),
-                        parse_mode="HTML",
-                    )
-            except Exception as e:
-                logger.error("Ошибка таймера: %s", e)
+        key = (uid, eid)
+        # Отменяем предыдущий таймер для этой пары пользователь+устройство
+        old = self._timers.get(key)
+        replaced = False
+        if old is not None and not old.done():
+            old.cancel()
+            replaced = True
 
-        task = asyncio.create_task(turn_off_later())
-        self._timers[uid] = task
-        await self._reply_text(
-            update,
-            t(uid, "timer_started", eid=esc(eid), minutes=minutes),
-            "HTML",
-        )
+        chat_id = update.effective_chat.id if update.effective_chat else None
+
+        async def turn_off_later():
+            try:
+                await asyncio.sleep(minutes * 60)
+                await self.ha.turn_off(eid)
+                if chat_id is not None:
+                    try:
+                        await context.application.bot.send_message(
+                            chat_id,
+                            t(uid, "timer_fired", eid=esc(eid), minutes=minutes),
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        logger.warning("Не удалось отправить уведомление о таймере: %s", e)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                if self._timers.get(key) is current_task:
+                    self._timers.pop(key, None)
+
+        current_task = asyncio.create_task(turn_off_later())
+        self._timers[key] = current_task
+
+        text = t(uid, "timer_started", eid=esc(eid), minutes=minutes)
+        if replaced:
+            text += "\n" + t(uid, "timer_replaced")
+        await self._reply_text(update, text, "HTML")
 
     # ---------- Inline-меню ----------
     def _main_menu_inline(self, uid: Optional[int]) -> InlineKeyboardMarkup:
@@ -815,7 +1042,7 @@ class HATelegramBot:
             return
         buttons = []
         for room in rooms:
-            cb_data = f"room:{room}"[:64]
+            cb_data = self._tok(f"room:{room}")
             buttons.append([InlineKeyboardButton(f"🏠 {room}", callback_data=cb_data)])
         buttons.append(self._back_to_main_button(uid))
         await self._send_or_edit(
@@ -838,7 +1065,7 @@ class HATelegramBot:
         buttons = []
         for scene_id in scenes:
             fname = self.registry.get_friendly_name(scene_id)
-            cb_data = f"sc:{scene_id}"[:64]
+            cb_data = self._tok(f"scene:{scene_id}")
             buttons.append([InlineKeyboardButton(f"🎬 {fname}", callback_data=cb_data)])
         buttons.append(self._back_to_main_button(uid))
         await self._send_or_edit(
@@ -878,44 +1105,38 @@ class HATelegramBot:
             return
         controllable = [
             e for e in entities
-            if e.split(".")[0] in {"light", "switch", "fan", "cover"}
+            if e.split(".")[0] in CONTROLLABLE_DOMAINS
         ]
         if not controllable:
             controllable = entities
         buttons = []
         for eid in controllable:
             fname = self.registry.get_friendly_name(eid)
-            cb_data = f"{action_key}:{eid}"[:64]
+            cb_data = self._tok(f"{action_key}:{eid}")
             buttons.append([InlineKeyboardButton(fname, callback_data=cb_data)])
         buttons.append([InlineKeyboardButton(t(uid, "btn_back"), callback_data="menu_control")])
         text = t(uid, "select_device", action=action)
         await self._send_or_edit(update_or_query, text, "HTML", InlineKeyboardMarkup(buttons))
 
     async def _show_room(self, update_or_query, uid: Optional[int], room_name: str):
-        """Показывает устройства в комнате."""
-        entities = self.registry._entities
+        """Показывает устройства в комнате (area_registry + fallback по атрибутам)."""
+        eids = self.registry.entities_in_room(room_name)
         lines = []
         buttons = []
-        for eid, data in entities.items():
-            attrs = data.get("attributes", {})
-            room = attrs.get("room_name", "") or attrs.get("area", "")
-            if isinstance(room, list) and room:
-                room = room[0]
-            if room_name.lower() in str(room).lower():
-                state = data.get("state")
-                state_l = state_localized(uid, state, short=True)
-                fname = attrs.get("friendly_name", eid)
-                lines.append(f"<b>{esc(fname)}</b> — <code>{esc(state_l)}</code>")
-                if eid.split(".")[0] in {"light", "switch", "fan", "cover"}:
-                    buttons.append([
-                        InlineKeyboardButton(f"✅ {fname}", callback_data=f"on:{eid}"[:64]),
-                        InlineKeyboardButton(f"❌ {fname}", callback_data=f"off:{eid}"[:64]),
-                    ])
+        for eid in eids:
+            data = self.registry._entities.get(eid, {})
+            lines.append(self._device_line(uid, eid, data))
+            if eid.split(".")[0] in CONTROLLABLE_DOMAINS:
+                fname = self.registry.get_friendly_name(eid)
+                buttons.append([
+                    InlineKeyboardButton(f"✅ {fname}", callback_data=self._tok(f"on:{eid}")),
+                    InlineKeyboardButton(f"❌ {fname}", callback_data=self._tok(f"off:{eid}")),
+                ])
         if not lines:
             text = t(uid, "room_not_found", room=esc(room_name))
             kb = InlineKeyboardMarkup([self._back_to_main_button(uid)])
         else:
-            text = t(uid, "room_title", room=esc(room_name)) + "\n\n" + "\n".join(lines)
+            text = self._truncate_lines(uid, t(uid, "room_title", room=esc(room_name)), lines)
             buttons.append(self._back_to_main_button(uid))
             kb = InlineKeyboardMarkup(buttons)
         await self._send_or_edit(update_or_query, text, "HTML", kb)
@@ -923,20 +1144,35 @@ class HATelegramBot:
     async def _send_or_edit(self, update_or_query, text: str, parse_mode: Optional[str] = None, reply_markup=None):
         """Универсальный метод: редактирует или отправляет сообщение."""
         if hasattr(update_or_query, "data"):
+            query = update_or_query
+            if len(text) > 4096:
+                # Слишком длинное для редактирования — отправляем новым сообщением
+                await self._reply_text(query, text, parse_mode, reply_markup=reply_markup)
+                return
             try:
-                await update_or_query.edit_message_text(
-                    text, parse_mode=parse_mode, reply_markup=reply_markup, disable_web_page_preview=True
+                await query.edit_message_text(
+                    text, parse_mode=parse_mode, reply_markup=reply_markup,
+                    disable_web_page_preview=True,
                 )
+            except BadRequest as e:
+                if "entities" in str(e) or "parse" in str(e):
+                    try:
+                        await query.edit_message_text(
+                            re.sub(r"<[^>]+>", "", text),
+                            reply_markup=reply_markup,
+                            disable_web_page_preview=True,
+                        )
+                    except Exception as e2:
+                        logger.warning("Ошибка редактирования (plain): %s", e2)
+                else:
+                    logger.warning("Ошибка редактирования: %s", e)
             except Exception as e:
                 logger.warning("Ошибка редактирования: %s", e)
         else:
             update = update_or_query
-            try:
-                await update.effective_message.reply_text(
-                    text, parse_mode=parse_mode, reply_markup=reply_markup, disable_web_page_preview=True
-                )
-            except Exception as e:
-                logger.warning("Ошибка отправки: %s", e)
+            await self._reply_text(
+                update, text, parse_mode, reply_markup=reply_markup,
+            )
 
     # ---------- Callback handler ----------
     async def callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -947,6 +1183,14 @@ class HATelegramBot:
             return
         uid = query.from_user.id
         data = query.data or ""
+
+        # Разрешаем короткие токены в полные payload
+        payload = self._resolve_tok(data) if data.startswith("x") else None
+        if data.startswith("x") and payload is None:
+            await query.edit_message_text(t(uid, "cb_expired"))
+            return
+        if payload:
+            data = payload
 
         # Смена языка
         if data.startswith("lang_"):
@@ -1012,62 +1256,56 @@ class HATelegramBot:
                 reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
             )
         elif ":" in data:
-            action, _, eid = data.partition(":")
+            action, _, arg = data.partition(":")
+            if action in ("on", "off", "tg"):
+                await self._apply_device_action(query, uid, action, arg)
+            elif action == "room":
+                await self._show_room(query, uid, arg)
+            elif action == "scene":
+                await self._apply_scene(query, uid, arg)
+            else:
+                logger.warning("Неизвестный callback: %s", data)
+
+    async def _apply_device_action(self, query, uid: Optional[int], action: str, eid: str):
+        """Включает/выключает/переключает устройство по inline-кнопке."""
+        try:
             if action == "on":
-                try:
-                    await self.ha.turn_on(eid)
-                    fname = self.registry.get_friendly_name(eid)
-                    await query.edit_message_text(
-                        t(uid, "turned_on", name=esc(fname)),
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
-                    )
-                except Exception as e:
-                    await query.edit_message_text(t(uid, "error", err=esc(str(e))))
+                await self.ha.turn_on(eid)
+                key = "turned_on"
             elif action == "off":
-                try:
+                await self.ha.turn_off(eid)
+                key = "turned_off"
+            else:  # tg
+                s = await self._get_state(eid)
+                if s and s.get("state") == "off":
+                    await self.ha.turn_on(eid)
+                else:
                     await self.ha.turn_off(eid)
-                    fname = self.registry.get_friendly_name(eid)
-                    await query.edit_message_text(
-                        t(uid, "turned_off", name=esc(fname)),
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
-                    )
-                except Exception as e:
-                    await query.edit_message_text(t(uid, "error", err=esc(str(e))))
-            elif action == "tg":
-                try:
-                    s = await self._get_state(eid)
-                    if s and s.get("state") == "off":
-                        await self.ha.turn_on(eid)
-                    else:
-                        await self.ha.turn_off(eid)
-                    fname = self.registry.get_friendly_name(eid)
-                    await query.edit_message_text(
-                        t(uid, "toggled", name=esc(fname)),
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
-                    )
-                except Exception as e:
-                    await query.edit_message_text(t(uid, "error", err=esc(str(e))))
-            elif data.startswith("room:"):
-                room_name = data[5:]
-                await self._show_room(query, uid, room_name)
-            elif data.startswith("sc:"):
-                scene_id = data[3:]
-                try:
-                    await self.ha.apply_scene(scene_id)
-                    fname = self.registry.get_friendly_name(scene_id)
-                    await query.edit_message_text(
-                        t(uid, "scene_applied", name=esc(fname)),
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
-                    )
-                except Exception as e:
-                    await query.edit_message_text(t(uid, "error", err=esc(str(e))))
+                key = "toggled"
+            fname = self.registry.get_friendly_name(eid)
+            await query.edit_message_text(
+                t(uid, key, name=esc(fname)),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+            )
+        except Exception as e:
+            await query.edit_message_text(t(uid, "error", err=esc(str(e))))
+
+    async def _apply_scene(self, query, uid: Optional[int], scene_id: str):
+        """Активирует сцену по inline-кнопке."""
+        try:
+            await self.ha.apply_scene(scene_id)
+            fname = self.registry.get_friendly_name(scene_id)
+            await query.edit_message_text(
+                t(uid, "scene_applied", name=esc(fname)),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+            )
+        except Exception as e:
+            await query.edit_message_text(t(uid, "error", err=esc(str(e))))
 
     async def _show_status_list(self, query, uid: Optional[int], domain: Optional[str]):
-        """Показывает список устройств с их состояниями."""
+        """Показывает список устройств с их состояниями (обрезка по строкам)."""
         entities = self.registry.list_entities(domain)
         if not entities:
             await query.edit_message_text(
@@ -1080,16 +1318,15 @@ class HATelegramBot:
         lines = []
         for eid in entities:
             data = self.registry._entities.get(eid, {})
-            attrs = data.get("attributes", {})
-            state = data.get("state")
-            state_l = state_localized(uid, state, short=True)
-            fname = attrs.get("friendly_name", eid)
-            lines.append(f"<b>{esc(fname)}</b> — <code>{esc(state_l)}</code>")
+            lines.append(self._device_line(uid, eid, data))
         title_key = "all_devices_title" if domain is None else "devices_of_type_title"
         title = t(uid, title_key, domain=esc(domain)) if domain else t(uid, title_key)
-        text = title + "\n\n" + "\n".join(lines)
-        if len(text) > 4000:
-            text = text[:4000] + "\n\n..."
+        text = self._truncate_lines(uid, title, lines)
+        if len(text) > 4096:
+            await self._reply_text(query, text, "HTML", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(t(uid, "btn_back"), callback_data="menu_status")],
+            ]))
+            return
         await query.edit_message_text(
             text,
             parse_mode="HTML",
@@ -1121,21 +1358,38 @@ class HATelegramBot:
         elif text in (ru_map["btn_help"], en_map["btn_help"]):
             await self._reply_text(update, t(uid, "help_text"), "HTML")
         else:
-            # Обычное текстовое сообщение — ищем устройство
+            # Обычное текстовое сообщение — ищем устройство.
+            # ВАЖНО: не выполняем действий по умолчанию, показываем статус + кнопки.
             eid = self.registry.by_id_or_alias(text)
-            if eid and eid.endswith((".light", ".switch", ".fan", ".cover", ".plug", ".scene")):
-                action = "on" if text.lower().endswith(("on", "вкл", "включить")) else "off"
-                try:
-                    if action == "on":
-                        await self.ha.turn_on(eid)
-                        fname = self.registry.get_friendly_name(eid)
-                        await self._reply_text(update, t(uid, "turned_on", name=esc(fname)), "HTML")
-                    else:
-                        await self.ha.turn_off(eid)
-                        fname = self.registry.get_friendly_name(eid)
-                        await self._reply_text(update, t(uid, "turned_off", name=esc(fname)), "HTML")
-                except Exception as e:
-                    await self._reply_text(update, t(uid, "error", err=esc(str(e))))
+            if eid:
+                await self._device_card(update, uid, eid)
+
+    async def _device_card(self, update: Update, uid: Optional[int], eid: str):
+        """Показывает карточку устройства: состояние + кнопки действий."""
+        s = await self._get_state(eid)
+        if not s:
+            return await self._reply_text(update, t(uid, "not_found"))
+        a = s.get("attributes", {})
+        state = s.get("state")
+        state_l = state_localized(uid, state)
+        fname = a.get("friendly_name", eid)
+        out = t(uid, "current_state", name=esc(fname), state=esc(state_l))
+
+        domain = eid.split(".")[0]
+        kb = None
+        if domain in CONTROLLABLE_DOMAINS:
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(t(uid, "btn_on"), callback_data=self._tok(f"on:{eid}")),
+                    InlineKeyboardButton(t(uid, "btn_off"), callback_data=self._tok(f"off:{eid}")),
+                    InlineKeyboardButton(t(uid, "btn_toggle"), callback_data=self._tok(f"tg:{eid}")),
+                ]
+            ])
+        elif domain == "scene":
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(t(uid, "btn_on"), callback_data=self._tok(f"scene:{eid}"))]
+            ])
+        await self._reply_text(update, out, "HTML", reply_markup=kb)
 
 
 # ---------- Main ----------
@@ -1183,6 +1437,8 @@ def main():
 
     async def post_shutdown(application: Application):
         logger.info("Остановка бота...")
+        for task in bot._timers.values():
+            task.cancel()
         await bot.ha.close()
 
     app = (
@@ -1202,6 +1458,7 @@ def main():
     app.add_handler(CommandHandler("on", bot.cmd_on))
     app.add_handler(CommandHandler("off", bot.cmd_off))
     app.add_handler(CommandHandler("toggle", bot.cmd_toggle))
+    app.add_handler(CommandHandler("set", bot.cmd_set))
     app.add_handler(CommandHandler("state", bot.cmd_state))
     app.add_handler(CommandHandler("room", bot.cmd_room))
     app.add_handler(CommandHandler("scene", bot.cmd_scene))
