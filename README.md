@@ -25,6 +25,7 @@ Telegram-бот для управления [Home Assistant](https://www.home-as
 - [🪟 Установка на Windows](README_WINDOWS.md)
 - [🛠️ Запуск как служба Windows](README_WINDOWS_SERVICE.md)
 - [🐧 Linux: детальная инструкция](README_LINUX.md)
+- [📁 Структура проекта](PROJECT_STRUCTURE.md)
 
 ---
 

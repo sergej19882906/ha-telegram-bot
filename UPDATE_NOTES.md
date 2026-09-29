@@ -1,7 +1,7 @@
 # 📝 UPDATE NOTES — версия 2.0
 
 Что нового в версии 2.0 по сравнению с 1.0: исправления багов, новые функции,
-обновлённая документация и скрипты установки.
+новые скрипты и полностью обновлённая документация.
 
 ---
 
@@ -38,7 +38,7 @@
    в логе «доступ разрешён всем».
 10. **Уведомления из HA → Telegram** — встроенный HTTP-приёмник (aiohttp):
     `NOTIFY_PORT`, `NOTIFY_HOST`, `NOTIFY_TOKEN`. Home Assistant шлёт сообщения
-    через `rest_command` (пример ниже). Поддержка `parse_mode` и `chat_ids`.
+    через `rest_command`. Поддержка `parse_mode` и `chat_ids`.
 11. **Поиск устройств** — ввод части имени показывает список совпадений
     (до 20, точное совпадение открывается сразу).
 12. **`/alloff`** — выключение всех `light`/`switch`/`fan`/`cover` с подтверждением
@@ -47,40 +47,64 @@
     штатной остановке, восстанавливаются с оставшимся временем при старте.
 14. **Логирование запросов** — каждое обращение фиксируется:
     `Запрос user=123456789: /on свет`.
-15. `/help` обновлён (все команды + подсказка про поиск).
+15. Поддержка `HA_TIMEOUT` и `DATA_DIR` через переменные окружения.
+16. `/help` обновлён (все команды + подсказка про поиск).
 
-## 📦 Изменения в файлах
+## 📦 Файлы проекта
+
+### Обновлены
 
 - `bot.py` — полностью переработан (v2.0)
 - `requirements.txt` — добавлен `aiohttp>=3.9`
 - `Dockerfile` — `DATA_DIR=/app/data`, `VOLUME /app/data`, `EXPOSE 8099`, версия 2.0
-- `.sh`-скрипты — обновлены: создание `data/`, новый шаблон `.env`,
-  мягкая остановка (сохранение таймеров), `install_service.sh` подхватывает
-  `NOTIFY_PORT` в комментарий юнита
-- **Новые `.bat`-скрипты для Windows:** `install.bat`, `start.bat`,
-  `start_log.bat`, `stop.bat` (аналоги Linux-скриптов)
+- `.sh`-скрипты — создание `data/`, шаблон `.env` из `.env.example`, мягкая
+  остановка (сохранение таймеров), `install_service.sh` подхватывает `NOTIFY_PORT`
+
+### Новые
+
+| Файл | Назначение |
+|---|---|
+| `docker-compose.yml` | Готовый compose-файл (том данных, порт уведомлений) |
+| `.dockerignore` | Минимальный build-контекст (без секретов и мусора) |
+| `.env.example` | Шаблон конфигурации со всеми переменными и комментариями |
+| `.gitignore` | Защита от коммита `.env`, venv, логов, данных |
+| `uninstall_service.sh` | Отдельное удаление systemd-службы (мягкая остановка) |
+| `install.bat` | Установка на Windows (venv + зависимости + `.env`) |
+| `start.bat` / `start_log.bat` / `stop.bat` | Запуск/логи/остановка на Windows |
+| `uninstall.bat` | Полное удаление на Windows |
+| `install_service.bat` | Установка службы Windows через NSSM |
+| `uninstall_service.bat` | Удаление службы Windows (поддерживает `SKIP_CONFIRM=1`) |
+| `service_status.bat` | Статус службы и процесса бота |
+| `service_restart.bat` | Перезапуск службы |
+| `service_log.bat` | Логи службы в реальном времени |
 
 ## 📚 Документация
 
-- `README.md` / `README_LINUX.md` — обновлены до v2.0, добавлены разделы
-  «Уведомления из Home Assistant», новые пункты troubleshooting
-- `README_DOCKER.md` — **новый**: docker run и docker-compose
-- `README_WINDOWS.md` — **новый**: установка на Windows 10/11
+- `README.md` / `README_LINUX.md` — обновлены до v2.0, перекрёстные ссылки
+- `README_DOCKER.md` — **новый**: docker run, compose, обновление, troubleshooting
+- `README_WINDOWS.md` — **новый**: установка на Windows 10/11, bat-скрипты, firewall
 - `README_WINDOWS_SERVICE.md` — **новый**: служба Windows (NSSM / Планировщик задач)
-- Перекрёстные ссылки между всеми инструкциями
+- `PROJECT_STRUCTURE.md` — **новый**: карта репозитория, потоки данных, матрица платформ, правила контрибьюторов
+- `UPDATE_NOTES.md` — этот файл
 
 ---
 
-## ⚙️ Новые / изменённые переменные окружения (.env)
+## ⚙️ Переменные окружения (.env)
 
 ```env
-# Вместо одного ALLOWED_USER_ID — список через запятую:
-ALLOWED_USER_IDS=123456789,987654321
+# Обязательные
+TELEGRAM_BOT_TOKEN=
+HA_BASE_URL=http://localhost:8123
+HA_ACCESS_TOKEN=
+ALLOWED_USER_IDS=123456789,987654321     # пусто = доступ ВСЕМ!
 
-# --- Приёмник уведомлений из Home Assistant ---
-NOTIFY_PORT=8099        # 0 = выключен
+# Опциональные
+DEFAULT_LANG=ru                          # ru / en
+NOTIFY_PORT=0                            # порт приёмника уведомлений (0 = выкл)
 NOTIFY_HOST=0.0.0.0
-NOTIFY_TOKEN=секрет     # обязателен, если NOTIFY_PORT != 0
+NOTIFY_TOKEN=                            # обязателен при NOTIFY_PORT != 0
+HA_TIMEOUT=15                            # таймаут запросов к HA, сек
+DATA_DIR=./data                          # папка данных (в Docker: /app/data)
 ```
 
 ## 🚨 Уведомления из Home Assistant
@@ -134,8 +158,7 @@ sudo systemctl start ha-telegram-bot
 ## ✅ Проверка после обновления
 
 1. `sudo systemctl status ha-telegram-bot` — служба активна
-2. `sudo journalctl -u ha-telegram-bot -n 30` — в логе
-   `Загружено устройств: N`
+2. `sudo journalctl -u ha-telegram-bot -n 30` — в логе `Загружено устройств: N`
 3. В Telegram: `/status` → «Home Assistant: онлайн»
 4. `/set свет 50` → подтверждение установки значения
 5. Уведомление: `curl -X POST -H "Authorization: Bearer <NOTIFY_TOKEN>" \
