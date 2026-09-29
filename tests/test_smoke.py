@@ -165,6 +165,18 @@ class TestTestNotify(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured[0][0], 7)
         self.assertIn("Тестовое уведомление", captured[0][1])
 
+    async def test_selftest_ok_with_notify_token(self):
+        # Регрессия: самопроверка без аргументов при заданном NOTIFY_TOKEN
+        # не должна получать 401 — бот предъявляет приёмнику свой же токен.
+        captured = []
+        b = self._make_bot_with_app(captured)
+        b.cfg.notify_token = "secret-token"
+        replies = []
+        await b.cmd_testnotify(self._make_update(replies), type("C", (), {"args": []})())
+        self.assertTrue(any("Тестовое уведомление отправлено" in r for r in replies), replies)
+        self.assertFalse(any("unauthorized" in r for r in replies), replies)
+        self.assertEqual(len(captured), 1)
+
     async def test_roundtrip_success(self):
         captured = []
         b = self._make_bot_with_app(captured)

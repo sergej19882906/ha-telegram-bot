@@ -1253,7 +1253,10 @@ class HATelegramBot:
             return await self._testnotify_roundtrip(update, uid, args[0])
 
         class _Req:
-            headers = {}
+            # Бот вызывает собственный приёмник — предъявляем свой же токен,
+            # иначе при заданном NOTIFY_TOKEN самопроверка получит 401.
+            headers = {"Authorization": f"Bearer {self.cfg.notify_token}"} \
+                if self.cfg.notify_token else {}
 
             async def json(self):
                 return {"text": t(uid, "testnotify_text")}
