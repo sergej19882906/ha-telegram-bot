@@ -1,67 +1,32 @@
-# Git
+# --- Секреты (НЕ попадают в образ и build-контекст) ---
+.env
+.env.*
+!.env.example
+
+# --- Git ---
 .git
 .gitignore
 
-# Виртуальное окружение
+# --- Виртуальное окружение и Python ---
 venv/
 .venv/
-env/
-
-# Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.pyo
 *.egg-info/
-dist/
-build/
+.pytest_cache/
 
-# IDE
+# --- Логи и данные (в контейнере создаются свои) ---
+logs/
+data/
+*.log
+
+# --- IDE / ОС ---
 .vscode/
 .idea/
-*.swp
-*.swo
+.DS_Store
+Thumbs.db
 
-# Локальные данные
-.env
-.env.local
-data/
-logs/
-user_langs.json
-
-# Docker
-Dockerfile
-docker-compose.yml
-.dockerignore
-
-# Документация
-*.md
-LICENSE
-
-# Скрипты Windows
+# --- Скрипты и документация (в образ не копируются) ---
 *.bat
-*.ps1
-
-# Скрипты Linux
 *.sh
-
-# Временные файлы
-*.tmp
-*.log
-create_*.py
-fix_*.py
-nssm.exe
-nssm.zip
-
-# Тесты
-tests/
-.pytest_cache/
-.coverage
-htmlcov/
-
-# CI/CD
-.github/
-.gitlab-ci.yml
-
-# Прочее
-Project structure.txt
+*.md

@@ -1,85 +1,24 @@
-version: '3.8'
+# =============================================================================
+# HA Telegram Bot — Docker Compose
+# Запуск:   docker compose up -d
+# Логи:    docker compose logs -f
+# Пересборка после обновления: docker compose up -d --build
+# =============================================================================
 
 services:
   ha-telegram-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    
+    build: .
+    image: ha-telegram-bot:latest
     container_name: ha-telegram-bot
-    
     restart: unless-stopped
-    
-    env_file:
-      - .env
-    
-    environment:
-      - TZ=Europe/Moscow
-      - DEFAULT_LANG=ru
-      - DATA_DIR=/app/data
-    
+    env_file: .env
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-    
-    network_mode: host
-    
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          cpus: '0.1'
-          memory: 128M
-    
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-      - "com.centurylinklabs.watchtower.scope=ha-telegram-bot"
-    
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      # Языки пользователей и активные таймеры переживают пересоздание контейнера
+      - ha_bot_data:/app/data
+    ports:
+      # Приёмник уведомлений из HA (NOTIFY_PORT).
+      # Если NOTIFY_PORT=0 в .env — удалите или закомментируйте эту строку.
+      - "8099:8099"
 
-  watchtower:
-    image: containrrr/watchtower
-    container_name: watchtower
-    
-    restart: unless-stopped
-    
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    
-    environment:
-      - TZ=Europe/Moscow
-      - WATCHTOWER_CLEANUP=true
-      - WATCHTOWER_REMOVE_VOLUMES=false
-      - WATCHTOWER_INCLUDE_RESTARTING=true
-      - WATCHTOWER_POLL_INTERVAL=3600
-      - WATCHTOWER_SCOPE=ha-telegram-bot
-      - WATCHTOWER_LABEL_ENABLE=true
-      - WATCHTOWER_NOTIFICATIONS=shoutrrr
-      # Опционально: уведомления в Telegram (раскомментируйте и заполните)
-      # - WATCHTOWER_NOTIFICATION_URL=telegram://TOKEN@telegram?channels=CHAT_ID
-    
-    # Проверка обновлений каждый час (3600 секунд)
-    # Измените на 86400 для проверки раз в сутки
-    command: --interval 3600 --cleanup --scope ha-telegram-bot
-    
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "5m"
-        max-file: "2"
-    
-    labels:
-      - "com.centurylinklabs.watchtower.scope=ha-telegram-bot"
+volumes:
+  ha_bot_data:
