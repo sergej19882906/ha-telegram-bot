@@ -1,0 +1,15 @@
+# Конфигурация pylint для проекта.
+# В CI используется автоматически (pylint читает .pylintrc из корня репозитория).
+
+[DESIGN]
+# python-telegram-bot вызывает обработчики с сигнатурой (update, context),
+# а post_init/post_shutdown — с (application). Неиспользуемые в теле
+# аргументы с этими именами — норма, а не проблема.
+ignored-argument-names=context|application|_.*|^ignored_|^unused_
+
+[FORMAT]
+max-line-length=120
+
+[MESSAGES CONTROL]
+disable=
+    missing-docstring,   # docstring'и в стиле проекта — краткие однострочники
