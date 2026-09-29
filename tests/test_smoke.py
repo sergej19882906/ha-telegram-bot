@@ -50,7 +50,7 @@ class TestLocalization(unittest.TestCase):
                         "timer_cancelled", "alloff_done",
                         "testnotify_text", "testnotify_sent", "testnotify_failed",
                         "testnotify_usage", "testnotify_ok", "testnotify_timeout",
-                        "testnotify_ha_error"):
+                        "testnotify_ha_error", "watchdog_failed", "watchdog_recovered"):
                 self.assertIn(key, msgs, f"{key} missing in {lang}")
 
     def test_fallback_to_key(self):
@@ -219,6 +219,73 @@ class TestTestNotify(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(any("rest_command.no_such_cmd" in r for r in replies), replies)
         self.assertIsNone(b._pending_roundtrip)
+
+
+class TestWatchdog(unittest.IsolatedAsyncioTestCase):
+    """Сторож уведомлений: одна итерация _watchdog_once."""
+
+    def _make_bot(self, captured):
+        b = make_bot()
+
+        class FakeBot:
+            async def send_message(self, cid, text, parse_mode=None):
+                captured.append((cid, text))
+
+        b.app = type("A", (), {"bot": FakeBot()})()
+        b._known_chats = {7}
+        b.cfg.notify_watchdog_command = "telegram_notify"
+        return b
+
+    def _patch_roundtrip(self, b, result):
+        async def fake_roundtrip(service):
+            self.assertEqual(service, "telegram_notify")
+            return result
+        b.notify_roundtrip = fake_roundtrip
+
+    async def test_ok_no_alert_when_was_ok(self):
+        captured = []
+        b = self._make_bot(captured)
+        self._patch_roundtrip(b, {"ok": True, "secs": 0.2, "sent": 1})
+        self.assertTrue(await b._watchdog_once(was_ok=True))
+        self.assertEqual(captured, [])
+
+    async def test_failure_sends_alert(self):
+        captured = []
+        b = self._make_bot(captured)
+        self._patch_roundtrip(b, {"ok": False, "stage": "callback", "error": "timeout"})
+        self.assertFalse(await b._watchdog_once(was_ok=True))
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0][0], 7)
+        self.assertIn("Сторож уведомлений", captured[0][1])
+
+    async def test_no_repeat_alert_while_broken(self):
+        captured = []
+        b = self._make_bot(captured)
+        self._patch_roundtrip(b, {"ok": False, "stage": "ha", "error": "boom"})
+        self.assertFalse(await b._watchdog_once(was_ok=False))
+        self.assertEqual(captured, [])
+
+    async def test_recovery_sends_alert(self):
+        captured = []
+        b = self._make_bot(captured)
+        self._patch_roundtrip(b, {"ok": True, "secs": 0.1, "sent": 1})
+        self.assertTrue(await b._watchdog_once(was_ok=False))
+        self.assertEqual(len(captured), 1)
+        self.assertIn("восстановлена", captured[0][1])
+
+    async def test_roundtrip_exception_treated_as_failure(self):
+        captured = []
+        b = self._make_bot(captured)
+
+        async def fake_roundtrip(service):
+            raise RuntimeError("unexpected")
+        b.notify_roundtrip = fake_roundtrip
+        self.assertFalse(await b._watchdog_once(was_ok=True))
+        self.assertEqual(len(captured), 1)
+
+    async def test_disabled_watchdog_returns_immediately(self):
+        b = make_bot()  # interval=0, command=None — задача должна завершиться
+        await b._notify_watchdog()
 
 
 class TestReplySplit(unittest.IsolatedAsyncioTestCase):

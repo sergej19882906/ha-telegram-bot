@@ -83,6 +83,8 @@ ha-telegram-bot/
 | `NOTIFY_PORT` | ➖ | Порт приёмника уведомлений (`0` = выкл) |
 | `NOTIFY_HOST` | ➖ | Интерфейс приёмника |
 | `NOTIFY_TOKEN` | ⚠️ при NOTIFY_PORT≠0 | Авторизация приёмника |
+| `NOTIFY_WATCHDOG_INTERVAL` | ➖ | Интервал сторожа уведомлений, сек (мин. 60, 0 = выкл) |
+| `NOTIFY_WATCHDOG_COMMAND` | ⚠️ при заданном интервале | rest_command HA для проверки цепочки |
 | `HA_TIMEOUT` | ➖ | Таймаут запросов к HA, сек (по умолчанию 15) |
 | `DATA_DIR` | ➖ | Папка данных (Docker: `/app/data`) |
 

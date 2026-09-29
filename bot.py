@@ -31,6 +31,12 @@ Telegram-бот для Home Assistant с интерактивным меню и 
 Версия 2.1.3:
 - После обнаружения 404 REST-endpoints реестров бот запоминает это
   и дальше ходит на websocket напрямую (без 404-шума в логе каждый цикл)
+
+Версия 2.1.4:
+- Сторож уведомлений: периодический контрольный круг HA -> бот -> Telegram
+  (NOTIFY_WATCHDOG_INTERVAL / NOTIFY_WATCHDOG_COMMAND), алерты при поломке
+  и восстановлении; ядро круга вынесено в notify_roundtrip (используется
+  и командой /testnotify)
 """
 
 import asyncio
@@ -74,7 +80,7 @@ except ImportError:
     aiohttp = None
     web = None
 
-BOT_VERSION = "2.1.3"
+BOT_VERSION = "2.1.4"
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -202,6 +208,8 @@ MESSAGES = {
         "testnotify_ha_error": "❌ Не удалось вызвать rest_command.{name} в HA: {err}\nПроверьте имя команды и доступность HA.",
         "testnotify_ok": "✅ Цепочка HA → бот → Telegram работает!\nКруг выполнен за {secs} с. Уведомление доставлено в {count} чат(ов).",
         "testnotify_timeout": "❌ Таймаут ({secs} с): HA вызвал rest_command, но уведомление не дошло до бота.\nПроверьте url в rest_command (http://{host}:{port}/notify), Bearer NOTIFY_TOKEN и сеть HA → сервер бота.",
+        "watchdog_failed": "⚠️ <b>Сторож уведомлений</b>: цепочка HA → бот → Telegram сломана.\nОшибка: {err}\nПроверьте rest_command, NOTIFY_PORT/NOTIFY_TOKEN и сеть.",
+        "watchdog_recovered": "✅ <b>Сторож уведомлений</b>: цепочка восстановлена, уведомления снова проходят.",
     },
     "en": {
         "welcome": "👋 Hello! I'm your smart home control bot.\n\nSend /menu to open the menu.",
@@ -312,6 +320,8 @@ MESSAGES = {
         "testnotify_ha_error": "❌ Failed to call rest_command.{name} in HA: {err}\nCheck the command name and HA availability.",
         "testnotify_ok": "✅ HA → bot → Telegram chain works!\nRound-trip completed in {secs} s. Notification delivered to {count} chat(s).",
         "testnotify_timeout": "❌ Timeout ({secs} s): HA called rest_command, but the notification never reached the bot.\nCheck the rest_command url (http://{host}:{port}/notify), Bearer NOTIFY_TOKEN and the network HA → bot server.",
+        "watchdog_failed": "⚠️ <b>Notification watchdog</b>: the HA → bot → Telegram chain is broken.\nError: {err}\nCheck rest_command, NOTIFY_PORT/NOTIFY_TOKEN and the network.",
+        "watchdog_recovered": "✅ <b>Notification watchdog</b>: the chain has recovered, notifications flow again.",
     },
 }
 
@@ -328,6 +338,14 @@ try:
     REFRESH_INTERVAL = max(15, int(os.environ.get("REFRESH_INTERVAL") or 60))
 except ValueError:
     REFRESH_INTERVAL = 60
+
+# Интервал автопроверки цепочки уведомлений, секунды (0 = выключено; минимум 60)
+try:
+    WATCHDOG_INTERVAL = max(60, int(os.environ.get("NOTIFY_WATCHDOG_INTERVAL") or 0))
+except ValueError:
+    WATCHDOG_INTERVAL = 0
+# Имя rest_command в HA для прогона проверки (обязательно при интервале > 0)
+WATCHDOG_COMMAND = os.environ.get("NOTIFY_WATCHDOG_COMMAND") or None
 
 # Атрибуты, по которым определяем комнату (fallback, если нет area_registry)
 ROOM_ATTRS = ("room_name", "area", "area_name", "location")
@@ -824,6 +842,8 @@ class HATelegramBot:
         self._notify_hits: list = []
         # Фоновая задача обновления реестра (создаётся в post_init)
         self._refresh_task = None
+        # Фоновая задача сторожа уведомлений (создаётся в post_init)
+        self._watchdog_task = None
         # Ожидание колбэка от HA для полного круга /testnotify <rest_command>
         self._pending_roundtrip = None
 
@@ -1251,10 +1271,14 @@ class HATelegramBot:
             err = body.get("error", f"HTTP {resp.status}")
             await self._reply_text(update, t(uid, "testnotify_failed", err=esc(str(err))))
 
-    async def _testnotify_roundtrip(self, update: Update, uid: Optional[int], service: str):
-        """Полный круг: бот -> HA (rest_command) -> бот (/notify) -> Telegram."""
+    async def notify_roundtrip(self, service: str) -> dict:
+        """Полный круг: бот -> HA (rest_command) -> бот (/notify) -> Telegram.
+
+        Возвращает {"ok": True, "secs": ..., "sent": ...} либо
+        {"ok": False, "stage": "ha"|"callback", "error": ...}.
+        """
         marker = secrets.token_hex(4)
-        text = f"{t(uid, 'testnotify_text')} [{marker}]"
+        text = f"{t(None, 'testnotify_text')} [{marker}]"
         future = asyncio.get_running_loop().create_future()
         self._pending_roundtrip = {"marker": marker, "future": future}
         start = time.time()
@@ -1262,25 +1286,72 @@ class HATelegramBot:
             try:
                 await self.ha.call_service("rest_command", service, {"message": text})
             except Exception as e:
-                return await self._reply_text(
-                    update,
-                    t(uid, "testnotify_ha_error", name=esc(service), err=esc(str(e))),
-                )
+                return {"ok": False, "stage": "ha", "error": str(e)}
             try:
                 result = await asyncio.wait_for(future, timeout=self.TESTNOTIFY_TIMEOUT)
             except asyncio.TimeoutError:
-                return await self._reply_text(
-                    update,
-                    t(uid, "testnotify_timeout", secs=self.TESTNOTIFY_TIMEOUT,
-                      host=esc(self.cfg.notify_host), port=self.cfg.notify_port),
-                )
-            elapsed = time.time() - start
-            await self._reply_text(
-                update,
-                t(uid, "testnotify_ok", secs=f"{elapsed:.1f}", count=result.get("sent", 0)),
-            )
+                return {"ok": False, "stage": "callback",
+                        "error": "timeout", "secs": self.TESTNOTIFY_TIMEOUT}
+            return {"ok": True, "secs": time.time() - start,
+                    "sent": result.get("sent", 0)}
         finally:
             self._pending_roundtrip = None
+
+    async def _testnotify_roundtrip(self, update: Update, uid: Optional[int], service: str):
+        """Полный круг: бот -> HA (rest_command) -> бот (/notify) -> Telegram."""
+        r = await self.notify_roundtrip(service)
+        if r["ok"]:
+            return await self._reply_text(
+                update,
+                t(uid, "testnotify_ok", secs=f"{r['secs']:.1f}", count=r["sent"]),
+            )
+        if r["stage"] == "ha":
+            return await self._reply_text(
+                update,
+                t(uid, "testnotify_ha_error", name=esc(service), err=esc(r["error"])),
+            )
+        return await self._reply_text(
+            update,
+            t(uid, "testnotify_timeout", secs=self.TESTNOTIFY_TIMEOUT,
+              host=esc(self.cfg.notify_host), port=self.cfg.notify_port),
+        )
+
+    async def _watchdog_alert(self, text: str):
+        """Разослать алерт сторожа всем целям уведомлений."""
+        for cid in self.notify_targets():
+            try:
+                await self.app.bot.send_message(cid, text, parse_mode="HTML")
+            except Exception as e:
+                logger.warning("Watchdog: не удалось отправить алерт в %s: %s", cid, e)
+
+    async def _watchdog_once(self, was_ok: bool) -> bool:
+        """Одна проверка цепочки уведомлений. Возвращает новое состояние (ok?)."""
+        try:
+            r = await self.notify_roundtrip(self.cfg.notify_watchdog_command)
+        except Exception as e:  # сторож не должен умирать сам
+            r = {"ok": False, "stage": "ha", "error": str(e)}
+        if r["ok"]:
+            logger.info("Watchdog: цепочка уведомлений работает (круг %.1f с)", r["secs"])
+            if not was_ok:
+                await self._watchdog_alert(t(None, "watchdog_recovered"))
+            return True
+        logger.warning("Watchdog: цепочка уведомлений сломана (%s): %s",
+                       r["stage"], r["error"])
+        if was_ok:
+            await self._watchdog_alert(t(None, "watchdog_failed", err=esc(r["error"])))
+        return False
+
+    async def _notify_watchdog(self):
+        """Периодическая проверка цепочки HA -> бот -> Telegram."""
+        interval = self.cfg.notify_watchdog_interval
+        command = self.cfg.notify_watchdog_command
+        if not interval or not command:
+            return
+        await asyncio.sleep(interval)  # не проверять сразу после старта
+        was_ok = True
+        while True:
+            was_ok = await self._watchdog_once(was_ok)
+            await asyncio.sleep(interval)
 
     async def cmd_timer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /timer — таймер выключения."""
@@ -2094,6 +2165,8 @@ class Config:
     notify_host: str = "0.0.0.0"
     notify_port: int = 0  # 0 = приёмник уведомлений выключен
     notify_token: Optional[str] = None
+    notify_watchdog_interval: int = 0  # 0 = сторож уведомлений выключен
+    notify_watchdog_command: Optional[str] = None  # rest_command для проверки
 
 
 def parse_allowed_users() -> Optional[set]:
@@ -2134,6 +2207,8 @@ def main():
         notify_host=os.environ.get("NOTIFY_HOST", "0.0.0.0"),
         notify_port=int(os.environ.get("NOTIFY_PORT") or 0),
         notify_token=os.environ.get("NOTIFY_TOKEN") or None,
+        notify_watchdog_interval=WATCHDOG_INTERVAL,
+        notify_watchdog_command=WATCHDOG_COMMAND,
     )
     if not cfg.token or not cfg.ha_token:
         raise SystemExit("Не заданы TELEGRAM_BOT_TOKEN и HA_ACCESS_TOKEN в файле .env")
@@ -2141,6 +2216,8 @@ def main():
         logger.warning("ALLOWED_USER_IDS не задан — доступ к боту разрешён ВСЕМ!")
     if cfg.notify_port and not cfg.notify_token:
         logger.warning("NOTIFY_TOKEN не задан — приёмник уведомлений доступен без авторизации!")
+    if cfg.notify_watchdog_interval and not cfg.notify_watchdog_command:
+        logger.warning("NOTIFY_WATCHDOG_INTERVAL задан без NOTIFY_WATCHDOG_COMMAND — сторож выключен")
 
     bot = HATelegramBot(cfg, cfg.allowed_users)
     logger.info("HA Telegram Bot v%s, интервал обновления реестра: %d с",
@@ -2172,11 +2249,16 @@ def main():
         bot._refresh_task = asyncio.get_running_loop().create_task(
             refresher(), name="entity_refresh"
         )
+        bot._watchdog_task = asyncio.get_running_loop().create_task(
+            bot._notify_watchdog(), name="notify_watchdog"
+        )
 
     async def post_shutdown(application: Application):
         logger.info("Остановка бота...")
         if bot._refresh_task is not None:
             bot._refresh_task.cancel()
+        if bot._watchdog_task is not None:
+            bot._watchdog_task.cancel()
         bot.save_timers()
         for task in bot._timers.values():
             task.cancel()

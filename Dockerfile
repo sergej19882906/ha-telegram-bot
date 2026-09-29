@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 LABEL maintainer="sergej19882906"
 LABEL description="Telegram bot for Home Assistant with notifications receiver"
-LABEL version="2.1.3"
+LABEL version="2.1.4"
 LABEL org.label-schema.vcs-url="https://github.com/sergej19882906/ha-telegram-bot"
 LABEL com.centurylinklabs.watchtower.enable="true"
 LABEL com.centurylinklabs.watchtower.scope="ha-telegram-bot"
