@@ -45,6 +45,10 @@ jobs:
           print("smoke check OK")
           EOF
 
+      # --- Постоянные тесты: локализация, алиасы, таймеры, /notify, websocket-фолбэк ---
+      - name: Unit tests (unittest)
+        run: python -m unittest discover -s tests -v
+
   # --- Проверка shell-скриптов ---
   shell-checks:
     runs-on: ubuntu-latest

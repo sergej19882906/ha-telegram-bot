@@ -11,6 +11,7 @@ ha-telegram-bot/
 │
 ├── 📄 bot.py                    # Основной код бота (вся логика в одном файле)
 ├── 📄 requirements.txt          # Зависимости Python
+├── 🧪 tests/test_smoke.py       # Постоянные тесты (unittest, без внешних зависимостей)
 ├── 📄 Dockerfile                # Сборка Docker-образа
 ├── 📄 docker-compose.yml        # Запуск через Docker Compose
 ├── 📄 .dockerignore             # Исключения из build-контекста
@@ -127,6 +128,7 @@ bot.py ──> data/timers.json       (только при shutdown, восст�
 3. Новые команды бота: обработчик в `HATelegramBot`, регистрация `CommandHandler` в `main()`, строки в `MESSAGES` (ru + en), `/help`, README
 4. Новые скрипты: добавить в `chmod +x` в `install.sh` и в этот файл
 5. Изменения логики — обновить `UPDATE_NOTES.md`
+6. Перед коммитом прогнать `python -m unittest discover -s tests -v` (тесты — в `tests/`)
 
 ---
 
