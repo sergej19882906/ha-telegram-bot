@@ -40,6 +40,7 @@ Telegram-бот для Home Assistant с интерактивным меню и 
 """
 
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -2038,6 +2039,16 @@ class HATelegramBot:
         if self.cfg.notify_token:
             auth = request.headers.get("Authorization", "")
             if auth != f"Bearer {self.cfg.notify_token}":
+                # Диагностика рассинхрона токенов без раскрытия их в логе:
+                # сравниваем длину и короткий хеш полученного и ожидаемого.
+                got = auth[7:] if auth.startswith("Bearer ") else auth
+                logger.warning(
+                    "/notify: неверный токен (получено: %d симв., sha256 %.8s; "
+                    "ожидалось: %d симв., sha256 %.8s)",
+                    len(got), hashlib.sha256(got.encode()).hexdigest(),
+                    len(self.cfg.notify_token),
+                    hashlib.sha256(self.cfg.notify_token.encode()).hexdigest(),
+                )
                 return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
         try:
             body = await request.json()
