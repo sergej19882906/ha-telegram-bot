@@ -37,6 +37,13 @@ Telegram-бот для Home Assistant с интерактивным меню и 
   (NOTIFY_WATCHDOG_INTERVAL / NOTIFY_WATCHDOG_COMMAND), алерты при поломке
   и восстановлении; ядро круга вынесено в notify_roundtrip (используется
   и командой /testnotify)
+
+Версия 2.1.5:
+- Исправлена самопроверка /testnotify: при заданном NOTIFY_TOKEN внутренний
+  запрос к собственному приёмнику предъявляет токен (был вечный 401)
+- Текст ошибок HA (тело ответа) включается в сообщение об ошибке вызова сервиса
+- Входящие запросы на /notify логируются; при 401 логируются длина и sha256-
+  префикс полученного и ожидаемого токенов (без раскрытия значений)
 """
 
 import asyncio
@@ -81,7 +88,7 @@ except ImportError:
     aiohttp = None
     web = None
 
-BOT_VERSION = "2.1.4"
+BOT_VERSION = "2.1.5"
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
