@@ -8,6 +8,14 @@ Telegram-бот для Home Assistant с интерактивным меню и 
 - Несколько разрешённых пользователей (ALLOWED_USER_IDS)
 - HTTP-приёмник уведомлений из Home Assistant (NOTIFY_PORT / NOTIFY_TOKEN)
 - Поиск устройств по подстроке, /alloff с подтверждением
+
+Версия 2.1:
+- /timers — список активных таймеров с кнопками отмены
+- Пресеты яркости (25/50/75/100%) в карточке света
+- Поиск по подстроке в командах /on /off /toggle /scene
+- REFRESH_INTERVAL — интервал обновления реестра через .env
+- Валидация диапазона температуры для /set (4–40)
+- Приёмник уведомлений не роняет бота при занятом порте
 """
 
 import asyncio
@@ -47,6 +55,8 @@ try:
     from aiohttp import web
 except ImportError:
     web = None
+
+BOT_VERSION = "2.1"
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -110,13 +120,17 @@ MESSAGES = {
         "unknown": "неизвестно",
         "error": "❌ Ошибка: {err}",
         "value_set": "✅ Установлено значение: {value}.",
-        "set_usage": "⚠️ Использование: /set <имя> <значение>\nДля света — яркость в % (0–100), для климата — температура.",
+        "set_usage": "⚠️ Использование: /set <имя> <значение>\nДля света — яркость в % (0–100), для климата — температура (4–40).",
         "set_not_number": "⚠️ Значение должно быть числом, например: /set свет 50",
+        "set_temp_range": "⚠️ Температура должна быть в диапазоне 4–40.",
         "set_unsupported": "❌ Для устройства «{name}» установка значений не поддерживается (только свет и климат).",
         "timer_started": "⏳ Таймер запущен для <code>{eid}</code>.\nУстройство выключится через {minutes} мин.",
         "timer_fired": "⏰ Таймер сработал: устройство <code>{eid}</code> выключено через {minutes} мин.",
         "timer_replaced": "♻️ Предыдущий таймер для этого устройства отменён.",
         "timer_restored": "♻️ Восстановлен таймер для <code>{eid}</code> (осталось {minutes} мин).",
+        "timer_cancelled": "🚫 Таймер для <code>{eid}</code> отменён.",
+        "timers_empty": "⏳ Активных таймеров нет.",
+        "timers_title": "⏳ <b>Активные таймеры: {count}</b>\n\nНажмите на таймер, чтобы отменить:",
         "room_not_found": "🔍 В комнате «{room}» устройств не найдено.",
         "room_title": "🏠 <b>Комната «{room}»:</b>",
         "all_devices_title": "📋 <b>Все устройства:</b>",
@@ -141,6 +155,7 @@ MESSAGES = {
             "<code>/room</code> <i>комната</i> — устройства в комнате\n"
             "<code>/scene</code> <i>имя</i> — активировать сцену\n"
             "<code>/timer</code> <i>мин имя</i> — таймер выключения\n"
+            "<code>/timers</code> — список и отмена таймеров\n"
             "<code>/alloff</code> — выключить весь свет и розетки\n"
             "<code>/status</code> — статус HA\n\n"
             "💡 Просто напишите имя устройства — покажу его статус и кнопки."
@@ -204,13 +219,17 @@ MESSAGES = {
         "unknown": "unknown",
         "error": "❌ Error: {err}",
         "value_set": "✅ Value set to: {value}.",
-        "set_usage": "⚠️ Usage: /set <name> <value>\nFor lights — brightness in % (0–100), for climate — temperature.",
+        "set_usage": "⚠️ Usage: /set <name> <value>\nFor lights — brightness in % (0–100), for climate — temperature (4–40).",
         "set_not_number": "⚠️ Value must be a number, e.g.: /set light 50",
+        "set_temp_range": "⚠️ Temperature must be between 4 and 40.",
         "set_unsupported": "❌ Setting values is not supported for «{name}» (lights and climate only).",
         "timer_started": "⏳ Timer started for <code>{eid}</code>.\nDevice will turn off in {minutes} min.",
         "timer_fired": "⏰ Timer fired: device <code>{eid}</code> turned off after {minutes} min.",
         "timer_replaced": "♻️ Previous timer for this device was cancelled.",
         "timer_restored": "♻️ Restored timer for <code>{eid}</code> ({minutes} min left).",
+        "timer_cancelled": "🚫 Timer for <code>{eid}</code> cancelled.",
+        "timers_empty": "⏳ No active timers.",
+        "timers_title": "⏳ <b>Active timers: {count}</b>\n\nTap a timer to cancel it:",
         "room_not_found": "🔍 No devices found in room «{room}».",
         "room_title": "🏠 <b>Room «{room}»:</b>",
         "all_devices_title": "📋 <b>All devices:</b>",
@@ -235,6 +254,7 @@ MESSAGES = {
             "<code>/room</code> <i>room</i> — devices in room\n"
             "<code>/scene</code> <i>name</i> — activate scene\n"
             "<code>/timer</code> <i>min name</i> — turn-off timer\n"
+            "<code>/timers</code> — list and cancel timers\n"
             "<code>/alloff</code> — turn off all lights and switches\n"
             "<code>/status</code> — HA status\n\n"
             "💡 Just type a device name — I'll show its status and buttons."
@@ -263,12 +283,22 @@ LANG_FILE = DATA_DIR / "user_langs.json"
 TIMERS_FILE = DATA_DIR / "timers.json"
 DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "ru")
 
+# Интервал обновления реестра устройств из HA, секунды (минимум 15)
+try:
+    REFRESH_INTERVAL = max(15, int(os.environ.get("REFRESH_INTERVAL") or 60))
+except ValueError:
+    REFRESH_INTERVAL = 60
+
 # Атрибуты, по которым определяем комнату (fallback, если нет area_registry)
 ROOM_ATTRS = ("room_name", "area", "area_name", "location")
 # Домены, которыми можно управлять кнопками
 CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "cover"}
 # Домены, выключаемые командой /alloff
 ALLOFF_DOMAINS = {"light", "switch", "fan", "cover"}
+# Допустимый диапазон температуры для /set (climate)
+TEMP_RANGE = (4.0, 40.0)
+# Пресеты яркости в карточке света
+BRIGHTNESS_PRESETS = (25, 50, 75, 100)
 
 
 def load_user_langs() -> dict:
@@ -464,13 +494,21 @@ class EntityRegistry:
         self._entities = states
 
         self._aliases = {}
+        alias_dupes = 0
         for eid, data in self._entities.items():
             attrs = data.get("attributes", {})
             fname = attrs.get("friendly_name")
             if fname:
                 alias = re.sub(r"[^\w\s-]", "", fname).strip().lower()
                 if alias and alias != eid.split(".")[-1].lower():
+                    if alias in self._aliases:
+                        alias_dupes += 1
                     self._aliases[alias] = eid
+        if alias_dupes:
+            logger.warning(
+                "Дублирующиеся имена устройств: %d — алиас указывает на последнее из них",
+                alias_dupes,
+            )
 
         await self._load_area_map()
 
@@ -663,7 +701,8 @@ class HATelegramBot:
         self._cb_seq += 1
         token = f"x{self._cb_seq}"
         self._cb_map[token] = payload
-        # Защита от неограниченного роста: вытесняем старые токены
+        # Защита от неограниченного роста: вытесняем самые старые токены
+        # (dict сохраняет порядок вставки — это FIFO)
         if len(self._cb_map) > 3000:
             for k in list(self._cb_map.keys())[:1000]:
                 del self._cb_map[k]
@@ -695,6 +734,36 @@ class HATelegramBot:
     def _uid(self, update: Update) -> Optional[int]:
         """Возвращает Telegram ID пользователя."""
         return update.effective_user.id if update.effective_user else None
+
+    async def _resolve_or_suggest(self, update: Update, uid: Optional[int],
+                                  name: str, action_key: str) -> Optional[str]:
+        """Ищет устройство: точное совпадение, затем поиск по подстроке.
+
+        При одном совпадении возвращает entity_id сразу.
+        При нескольких — отправляет список кнопок и возвращает None.
+        """
+        eid = self.registry.by_id_or_alias(name)
+        if eid:
+            return eid
+        matches = self.registry.search(name)
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            buttons = []
+            for m in matches:
+                fname = self.registry.get_friendly_name(m)
+                buttons.append([InlineKeyboardButton(
+                    fname, callback_data=self._tok(f"{action_key}:{m}"),
+                )])
+            await self._reply_text(
+                update,
+                t(uid, "search_title", count=len(matches)),
+                "HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            return None
+        await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
+        return None
 
     async def _reply_text(self, update: Update, text: str, parse_mode: Optional[str] = None, **kwargs):
         """Отправляет сообщение, разбивая длинные тексты и защищаясь от битого HTML."""
@@ -740,9 +809,9 @@ class HATelegramBot:
             current_length += line_length
         if current:
             parts.append("\n".join(current))
-        # Отдельная слишком длинная строка — жёстко обрезаем
-        # (защита сработает в _reply_text: plain text fallback)
-        return [p[:max_length + 200] if len(p) > max_length + 500 else p for p in parts] or [""]
+        # Отдельная слишком длинная строка — жёстко обрезаем до лимита
+        # (защита от битого HTML сработает в _reply_text: plain text fallback)
+        return [p[:max_length] if len(p) > max_length else p for p in parts] or [""]
 
     def _truncate_lines(self, uid: Optional[int], title: str, lines: list, limit: int = None) -> str:
         """Собирает список HTML-строк в сообщение, обрезая по границам строк."""
@@ -836,9 +905,9 @@ class HATelegramBot:
         if not context.args:
             return await self._reply_text(update, "⚠️ /on <имя>")
         name = " ".join(context.args)
-        eid = self.registry.by_id_or_alias(name)
+        eid = await self._resolve_or_suggest(update, uid, name, "on")
         if not eid:
-            return await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
+            return
         try:
             await self.ha.turn_on(eid)
             fname = self.registry.get_friendly_name(eid)
@@ -854,9 +923,9 @@ class HATelegramBot:
         if not context.args:
             return await self._reply_text(update, "⚠️ /off <имя>")
         name = " ".join(context.args)
-        eid = self.registry.by_id_or_alias(name)
+        eid = await self._resolve_or_suggest(update, uid, name, "off")
         if not eid:
-            return await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
+            return
         try:
             await self.ha.turn_off(eid)
             fname = self.registry.get_friendly_name(eid)
@@ -872,9 +941,9 @@ class HATelegramBot:
         if not context.args:
             return await self._reply_text(update, "⚠️ /toggle <имя>")
         name = " ".join(context.args)
-        eid = self.registry.by_id_or_alias(name)
+        eid = await self._resolve_or_suggest(update, uid, name, "tg")
         if not eid:
-            return await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
+            return
         try:
             s = await self._get_state(eid)
             if s and s.get("state") == "off":
@@ -901,10 +970,16 @@ class HATelegramBot:
         name = " ".join(context.args[:-1])
         eid = self.registry.by_id_or_alias(name)
         if not eid:
+            matches = self.registry.search(name)
+            if len(matches) == 1:
+                eid = matches[0]
+        if not eid:
             return await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
         domain = eid.split(".")[0]
         if domain not in ("light", "climate"):
             return await self._reply_text(update, t(uid, "set_unsupported", name=esc(name)))
+        if domain == "climate" and not (TEMP_RANGE[0] <= value <= TEMP_RANGE[1]):
+            return await self._reply_text(update, t(uid, "set_temp_range"))
         try:
             await self.ha.set_value(eid, value)
             shown = f"{value:g}%" if domain == "light" else f"{value:g}°"
@@ -969,6 +1044,13 @@ class HATelegramBot:
         name = " ".join(context.args)
         eid = self.registry.by_id_or_alias(name)
         if not eid or not eid.startswith("scene."):
+            matches = [m for m in self.registry.search(name)
+                       if m.startswith("scene.")]
+            if len(matches) == 1:
+                eid = matches[0]
+            else:
+                eid = None
+        if not eid:
             return await self._reply_text(update, t(uid, "scene_not_found", name=esc(name)))
         try:
             await self.ha.apply_scene(eid)
@@ -999,13 +1081,56 @@ class HATelegramBot:
         except ValueError:
             return await self._reply_text(update, "⚠️ Время должно быть числом от 1 до 1440")
         name = " ".join(context.args[1:])
-        eid = self.registry.by_id_or_alias(name)
+        eid = await self._resolve_or_suggest(update, uid, name, "off")
         if not eid:
-            return await self._reply_text(update, t(uid, "device_not_found", name=esc(name)))
+            return
 
         chat_id = update.effective_chat.id if update.effective_chat else None
         text = await self._start_timer(uid, chat_id, eid, minutes)
         await self._reply_text(update, text, "HTML")
+
+    async def cmd_timers(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /timers — список активных таймеров с отменой."""
+        if not self._check_auth(update):
+            return
+        uid = self._uid(update)
+        rows = []
+        now = time.time()
+        for (tuid, eid), meta in sorted(
+            self._timer_meta.items(), key=lambda kv: kv[1]["fire_at"]
+        ):
+            if tuid != uid:
+                continue
+            left = max(1, round((meta["fire_at"] - now) / 60))
+            fname = self.registry.get_friendly_name(eid)
+            rows.append((eid, fname, left))
+        if not rows:
+            return await self._reply_text(update, t(uid, "timers_empty"))
+        buttons = []
+        for eid, fname, left in rows:
+            buttons.append([InlineKeyboardButton(
+                f"❌ {fname} — {left} мин",
+                callback_data=self._tok(f"tmrc:{eid}"),
+            )])
+        await self._reply_text(
+            update,
+            t(uid, "timers_title", count=len(rows)),
+            "HTML",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    def _cancel_timer(self, uid: Optional[int], eid: str) -> bool:
+        """Отменяет таймер пользователя для устройства. True, если был отменён."""
+        key = (uid, eid)
+        task = self._timers.get(key)
+        if task is not None and not task.done():
+            task.cancel()
+            self._timers.pop(key, None)
+            self._timer_meta.pop(key, None)
+            return True
+        self._timers.pop(key, None)
+        self._timer_meta.pop(key, None)
+        return False
 
     async def _start_timer(self, uid: Optional[int], chat_id: Optional[int],
                            eid: str, minutes: int, remaining: Optional[float] = None) -> str:
@@ -1379,10 +1504,21 @@ class HATelegramBot:
             action, _, arg = data.partition(":")
             if action in ("on", "off", "tg"):
                 await self._apply_device_action(query, uid, action, arg)
+            elif action == "set":
+                await self._apply_set_action(query, uid, arg)
+            elif action == "tmrc":
+                if self._cancel_timer(uid, arg):
+                    await query.edit_message_text(
+                        t(uid, "timer_cancelled", eid=esc(arg)), parse_mode="HTML",
+                    )
+                else:
+                    await query.edit_message_text(t(uid, "cb_expired"))
             elif action == "room":
                 await self._show_room(query, uid, arg)
             elif action == "scene":
                 await self._apply_scene(query, uid, arg)
+            elif action == "card":
+                await self._device_card(query, uid, arg)
             elif action == "alloff":
                 if arg == "yes":
                     await self._alloff_execute(query, uid)
@@ -1410,6 +1546,24 @@ class HATelegramBot:
             fname = self.registry.get_friendly_name(eid)
             await query.edit_message_text(
                 t(uid, key, name=esc(fname)),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
+            )
+        except Exception as e:
+            await query.edit_message_text(t(uid, "error", err=esc(str(e))))
+
+    async def _apply_set_action(self, query, uid: Optional[int], arg: str):
+        """Устанавливает яркость/температуру по inline-кнопке (payload: <eid>:<значение>)."""
+        eid, _, raw = arg.rpartition(":")
+        try:
+            value = float(raw)
+        except ValueError:
+            return await query.edit_message_text(t(uid, "error", err="bad value"))
+        try:
+            await self.ha.set_value(eid, value)
+            shown = f"{value:g}%" if eid.startswith("light.") else f"{value:g}°"
+            await query.edit_message_text(
+                t(uid, "value_set", value=esc(shown)),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([self._back_to_main_button(uid)]),
             )
@@ -1523,13 +1677,18 @@ class HATelegramBot:
         domain = eid.split(".")[0]
         kb = None
         if domain in CONTROLLABLE_DOMAINS:
-            kb = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(t(uid, "btn_on"), callback_data=self._tok(f"on:{eid}")),
-                    InlineKeyboardButton(t(uid, "btn_off"), callback_data=self._tok(f"off:{eid}")),
-                    InlineKeyboardButton(t(uid, "btn_toggle"), callback_data=self._tok(f"tg:{eid}")),
-                ]
-            ])
+            rows = [[
+                InlineKeyboardButton(t(uid, "btn_on"), callback_data=self._tok(f"on:{eid}")),
+                InlineKeyboardButton(t(uid, "btn_off"), callback_data=self._tok(f"off:{eid}")),
+                InlineKeyboardButton(t(uid, "btn_toggle"), callback_data=self._tok(f"tg:{eid}")),
+            ]]
+            if domain == "light":
+                rows.append([
+                    InlineKeyboardButton(
+                        f"{p}%", callback_data=self._tok(f"set:{eid}:{p}"),
+                    ) for p in BRIGHTNESS_PRESETS
+                ])
+            kb = InlineKeyboardMarkup(rows)
         elif domain == "scene":
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton(t(uid, "btn_on"), callback_data=self._tok(f"scene:{eid}"))]
@@ -1542,6 +1701,10 @@ class HATelegramBot:
         if self._known_chats:
             return sorted(self._known_chats)
         if self.allowed_users:
+            logger.warning(
+                "Нет известных чатов — fallback на ALLOWED_USER_IDS; "
+                "для групповых чатов user_id != chat_id, уведомления могут не дойти"
+            )
             return sorted(self.allowed_users)
         return []
 
@@ -1577,7 +1740,11 @@ class HATelegramBot:
         return web.json_response({"ok": True, "sent": sent, "failed": failed})
 
     async def start_notify_server(self):
-        """Запускает HTTP-приёмник уведомлений (если настроен NOTIFY_PORT)."""
+        """Запускает HTTP-приёмник уведомлений (если настроен NOTIFY_PORT).
+
+        Занятый/недоступный порт не роняет бота — приёмник просто отключается,
+        управление устройствами продолжает работать.
+        """
         if not self.cfg.notify_port:
             return
         if web is None:
@@ -1589,7 +1756,13 @@ class HATelegramBot:
         self._notify_runner = web.AppRunner(app_web)
         await self._notify_runner.setup()
         site = web.TCPSite(self._notify_runner, self.cfg.notify_host, self.cfg.notify_port)
-        await site.start()
+        try:
+            await site.start()
+        except OSError as e:
+            logger.error("Приёмник уведомлений не запущен (%s) — бот работает без него", e)
+            await self._notify_runner.cleanup()
+            self._notify_runner = None
+            return
         logger.info("Приёмник уведомлений: http://%s:%s/notify",
                     self.cfg.notify_host, self.cfg.notify_port)
 
@@ -1707,6 +1880,8 @@ def main():
         logger.warning("NOTIFY_TOKEN не задан — приёмник уведомлений доступен без авторизации!")
 
     bot = HATelegramBot(cfg, cfg.allowed_users)
+    logger.info("HA Telegram Bot v%s, интервал обновления реестра: %d с",
+                BOT_VERSION, REFRESH_INTERVAL)
 
     async def post_init(application: Application):
         bot.app = application
@@ -1722,7 +1897,7 @@ def main():
 
         async def refresher():
             while True:
-                await asyncio.sleep(60)
+                await asyncio.sleep(REFRESH_INTERVAL)
                 try:
                     await bot.registry.refresh()
                 except Exception as e:
@@ -1761,6 +1936,7 @@ def main():
     app.add_handler(CommandHandler("scene", bot.cmd_scene))
     app.add_handler(CommandHandler("status", bot.cmd_status))
     app.add_handler(CommandHandler("timer", bot.cmd_timer))
+    app.add_handler(CommandHandler("timers", bot.cmd_timers))
     app.add_handler(CommandHandler("alloff", bot.cmd_alloff))
     app.add_handler(CallbackQueryHandler(bot.callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.on_menu_text))
