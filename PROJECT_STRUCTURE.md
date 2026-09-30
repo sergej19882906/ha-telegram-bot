@@ -52,8 +52,9 @@ ha-telegram-bot/
     ├── .env                     # Конфигурация с секретами (gitignored)
     ├── venv/                    # Виртуальное окружение (gitignored)
     ├── logs/                    # Логи (gitignored)
-    └── data/                    # Языки пользователей и таймеры (gitignored)
+    └── data/                    # Языки, чаты для уведомлений и таймеры (gitignored)
         ├── user_langs.json
+        ├── known_chats.json
         └── timers.json
 ```
 
@@ -104,7 +105,8 @@ ha-telegram-bot/
                            обратно в Telegram
 
 bot.py ──> data/user_langs.json   (языки, per user)
-bot.py ──> data/timers.json       (только при shutdown, восстанавливается при старте)
+bot.py ──> data/known_chats.json  (чаты для уведомлений, per user)
+bot.py ──> data/timers.json       (таймеры: при каждом изменении и при shutdown)
 ```
 
 ---
@@ -134,4 +136,4 @@ bot.py ──> data/timers.json       (только при shutdown, восст�
 
 ---
 
-*Актуально на сентябрь 2026 года. Версия 2.0*
+*Актуально на сентябрь 2026 года. Версия 2.1.6*

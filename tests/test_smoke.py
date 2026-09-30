@@ -113,6 +113,27 @@ class TestTimers(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(b._cancel_timer(1, "light.x"))
 
 
+class TestKnownChatsPersistence(unittest.TestCase):
+    def test_chats_survive_restart(self):
+        b1 = make_bot()
+        b1._known_chats = {7, -1001234567890}
+        bot.save_known_chats(b1._known_chats)
+        # Новый экземпляр бота (условный рестарт) подхватывает чаты из файла
+        b2 = make_bot()
+        self.assertEqual(b2._known_chats, {7, -1001234567890})
+
+    def test_new_chat_is_persisted_on_auth(self):
+        b = make_bot()
+        upd = type("U", (), {
+            "effective_user": type("U", (), {"id": 1})(),
+            "effective_chat": type("C", (), {"id": 42})(),
+            "message": None, "callback_query": None,
+        })()
+        self.assertTrue(b._check_auth(upd))
+        self.assertIn(42, b._known_chats)
+        self.assertIn(42, bot.load_known_chats())
+
+
 class TestNotifyRateLimit(unittest.IsolatedAsyncioTestCase):
     async def test_rate_limit_429(self):
         b = make_bot()
@@ -201,7 +222,7 @@ class TestTestNotify(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(any("Цепочка HA → бот → Telegram работает" in r for r in replies), replies)
         self.assertEqual(len(captured), 1)  # уведомление дошло до чата
-        self.assertIsNone(b._pending_roundtrip)
+        self.assertEqual(b._pending_roundtrips, {})
 
     async def test_roundtrip_timeout(self):
         b = self._make_bot_with_app([])
@@ -216,7 +237,7 @@ class TestTestNotify(unittest.IsolatedAsyncioTestCase):
             self._make_update(replies), type("C", (), {"args": ["telegram_notify"]})()
         )
         self.assertTrue(any("Таймаут" in r for r in replies), replies)
-        self.assertIsNone(b._pending_roundtrip)
+        self.assertEqual(b._pending_roundtrips, {})
 
     async def test_roundtrip_ha_error(self):
         b = self._make_bot_with_app([])
@@ -230,7 +251,38 @@ class TestTestNotify(unittest.IsolatedAsyncioTestCase):
             self._make_update(replies), type("C", (), {"args": ["no_such_cmd"]})()
         )
         self.assertTrue(any("rest_command.no_such_cmd" in r for r in replies), replies)
-        self.assertIsNone(b._pending_roundtrip)
+        self.assertEqual(b._pending_roundtrips, {})
+
+    async def test_concurrent_roundtrips_are_isolated(self):
+        # Регрессия: два одновременных круга не должны перезаписывать друг друга
+        b = self._make_bot_with_app([])
+        b.TESTNOTIFY_TIMEOUT = 0.3
+        first_text = []
+
+        async def fake_call_service(domain, service, data):
+            text = data["message"]
+            if first_text:
+                # Оба круга запущены: доставляем уведомление только первому
+                class Req:
+                    headers = {}
+
+                    async def json(self):
+                        return {"text": first_text[0]}
+
+                await b._handle_notify(Req())
+            else:
+                first_text.append(text)
+            return None
+
+        b.ha.call_service = fake_call_service
+        r1, r2 = await asyncio.gather(
+            b.notify_roundtrip("telegram_notify"),
+            b.notify_roundtrip("telegram_notify"),
+        )
+        self.assertTrue(r1["ok"])
+        self.assertFalse(r2["ok"])
+        self.assertEqual(r2["stage"], "callback")
+        self.assertEqual(b._pending_roundtrips, {})
 
 
 class TestWatchdog(unittest.IsolatedAsyncioTestCase):

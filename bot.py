@@ -44,6 +44,17 @@ Telegram-бот для Home Assistant с интерактивным меню и 
 - Текст ошибок HA (тело ответа) включается в сообщение об ошибке вызова сервиса
 - Входящие запросы на /notify логируются; при 401 логируются длина и sha256-
   префикс полученного и ожидаемого токенов (без раскрытия значений)
+
+Версия 2.1.6:
+- Одновременные /testnotify <rest_command> больше не перезаписывают друг друга:
+  ожидания колбэков хранятся по маркерам (словарь), а не в одном слоте
+- Известные чаты для уведомлений сохраняются в data/known_chats.json —
+  уведомления из HA доходят сразу после перезапуска бота
+- NOTIFY_PORT читается с защитой от мусорных значений (как другие числовые .env)
+- Файлы данных по умолчанию лежат в data/ (раньше — корень проекта);
+  legacy-файлы из корня переносятся в data/ автоматически при старте
+- Usage-подсказки /on /off /toggle /room /scene /timer локализованы (ru/en)
+- Публичный метод EntityRegistry.get_cached() вместо доступа к _entities снаружи
 """
 
 import asyncio
@@ -88,7 +99,7 @@ except ImportError:
     aiohttp = None
     web = None
 
-BOT_VERSION = "2.1.5"
+BOT_VERSION = "2.1.6"
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -97,6 +108,19 @@ logging.basicConfig(
 logger = logging.getLogger("ha-bot")
 
 load_dotenv()
+
+
+def parse_int_env(name: str, default: int, min_val: Optional[int] = None) -> int:
+    """Читает целочисленную переменную окружения с защитой от мусорных значений."""
+    raw = os.environ.get(name)
+    try:
+        value = int(raw) if raw else default
+    except ValueError:
+        logger.warning("Неверный %s=%r, использую %d", name, raw, default)
+        value = default
+    if min_val is not None:
+        value = max(min_val, value)
+    return value
 
 
 def esc(text) -> str:
@@ -108,6 +132,13 @@ def esc(text) -> str:
 
 MESSAGES = {
     "ru": {
+        "usage_on": "⚠️ Использование: /on <имя>",
+        "usage_off": "⚠️ Использование: /off <имя>",
+        "usage_toggle": "⚠️ Использование: /toggle <имя>",
+        "usage_room": "⚠️ Использование: /room <комната>",
+        "usage_scene": "⚠️ Использование: /scene <имя>",
+        "usage_timer": "⚠️ Использование: /timer <мин> <имя>",
+        "timer_bad_minutes": "⚠️ Время должно быть числом от 1 до 1440",
         "welcome": "👋 Привет! Я бот для управления вашим умным домом.\n\nОтправьте /menu, чтобы открыть меню.",
         "main_menu_title": "📋 <b>Главное меню</b>\n\nВыберите раздел:",
         "btn_control": "🎛 Управление",
@@ -220,6 +251,13 @@ MESSAGES = {
         "watchdog_recovered": "✅ <b>Сторож уведомлений</b>: цепочка восстановлена, уведомления снова проходят.",
     },
     "en": {
+        "usage_on": "⚠️ Usage: /on <name>",
+        "usage_off": "⚠️ Usage: /off <name>",
+        "usage_toggle": "⚠️ Usage: /toggle <name>",
+        "usage_room": "⚠️ Usage: /room <room>",
+        "usage_scene": "⚠️ Usage: /scene <name>",
+        "usage_timer": "⚠️ Usage: /timer <min> <name>",
+        "timer_bad_minutes": "⚠️ Time must be a number from 1 to 1440",
         "welcome": "👋 Hello! I'm your smart home control bot.\n\nSend /menu to open the menu.",
         "main_menu_title": "📋 <b>Main menu</b>\n\nChoose a section:",
         "btn_control": "🎛 Control",
@@ -335,23 +373,19 @@ MESSAGES = {
 
 # Путь к файлам данных
 # В Docker: /app/data/
-# Локально: рядом со скриптом
-DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent))
+# Локально: папка data/ рядом со скриптом
+SCRIPT_DIR = Path(__file__).parent
+DATA_DIR = Path(os.environ.get("DATA_DIR") or SCRIPT_DIR / "data")
 LANG_FILE = DATA_DIR / "user_langs.json"
 TIMERS_FILE = DATA_DIR / "timers.json"
+CHATS_FILE = DATA_DIR / "known_chats.json"
 DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "ru")
 
 # Интервал обновления реестра устройств из HA, секунды (минимум 15)
-try:
-    REFRESH_INTERVAL = max(15, int(os.environ.get("REFRESH_INTERVAL") or 60))
-except ValueError:
-    REFRESH_INTERVAL = 60
+REFRESH_INTERVAL = parse_int_env("REFRESH_INTERVAL", 60, min_val=15)
 
 # Интервал автопроверки цепочки уведомлений, секунды (0 = выключено; минимум 60)
-try:
-    WATCHDOG_INTERVAL = max(60, int(os.environ.get("NOTIFY_WATCHDOG_INTERVAL") or 0))
-except ValueError:
-    WATCHDOG_INTERVAL = 0
+WATCHDOG_INTERVAL = parse_int_env("NOTIFY_WATCHDOG_INTERVAL", 0, min_val=60)
 # Имя rest_command в HA для прогона проверки (обязательно при интервале > 0)
 WATCHDOG_COMMAND = os.environ.get("NOTIFY_WATCHDOG_COMMAND") or None
 
@@ -387,6 +421,27 @@ def save_user_langs(langs: dict):
         )
     except Exception as e:
         logger.warning("Не удалось записать %s: %s", LANG_FILE, e)
+
+
+def load_known_chats() -> set:
+    """Загружает известные чаты (адресаты уведомлений) из файла."""
+    if CHATS_FILE.exists():
+        try:
+            data = json.loads(CHATS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return {int(c) for c in data}
+        except Exception as e:
+            logger.warning("Не удалось прочитать %s: %s", CHATS_FILE, e)
+    return set()
+
+
+def save_known_chats(chats: set):
+    """Сохраняет известные чаты в файл."""
+    try:
+        CHATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CHATS_FILE.write_text(json.dumps(sorted(chats)), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Не удалось записать %s: %s", CHATS_FILE, e)
 
 
 USER_LANGS = load_user_langs()
@@ -808,6 +863,10 @@ class EntityRegistry:
         data = self._entities.get(eid, {})
         return data.get("attributes", {}).get("friendly_name", eid)
 
+    def get_cached(self, eid: str) -> dict:
+        """Возвращает закешированные данные устройства ({} если неизвестно)."""
+        return self._entities.get(eid, {})
+
 
 # ---------- Главное меню (кнопки внизу чата) ----------
 
@@ -844,8 +903,9 @@ class HATelegramBot:
         self._timers: dict = {}
         # Мета таймеров для сохранения: {(user_id, entity_id): {...}}
         self._timer_meta: dict = {}
-        # Чаты авторизованных пользователей (для рассылки уведомлений)
-        self._known_chats: set = set()
+        # Чаты пользователей, писавших боту (для рассылки уведомлений);
+        # персистятся — уведомления доходят сразу после перезапуска
+        self._known_chats: set = load_known_chats()
         # Маппинг коротких токенов callback_data -> полный payload.
         # Нужен, потому что callback_data ограничена 64 байтами,
         # а entity_id / имена комнат могут быть длиннее.
@@ -859,8 +919,10 @@ class HATelegramBot:
         self._refresh_task = None
         # Фоновая задача сторожа уведомлений (создаётся в post_init)
         self._watchdog_task = None
-        # Ожидание колбэка от HA для полного круга /testnotify <rest_command>
-        self._pending_roundtrip = None
+        # Ожидания колбэков от HA для полного круга /testnotify <rest_command>:
+        # marker -> asyncio.Future. Словарь, а не один слот, чтобы одновременные
+        # проверки разных пользователей не перезаписывали друг друга
+        self._pending_roundtrips: dict = {}
 
     # ---------- Callback-токены ----------
 
@@ -888,9 +950,13 @@ class HATelegramBot:
         if self.allowed_users is not None and user_id not in self.allowed_users:
             logger.warning("Отказано в доступе: user_id=%s", user_id)
             return False
-        # Запоминаем чат для уведомлений
+        # Запоминаем чат для уведомлений (персистим новые, чтобы уведомления
+        # доходили сразу после перезапуска бота)
         if update.effective_chat is not None:
-            self._known_chats.add(update.effective_chat.id)
+            chat_id = update.effective_chat.id
+            if chat_id not in self._known_chats:
+                self._known_chats.add(chat_id)
+                save_known_chats(self._known_chats)
         what = ""
         if update.message and update.message.text:
             what = update.message.text[:80]
@@ -1081,7 +1147,7 @@ class HATelegramBot:
             return
         uid = self._uid(update)
         if not context.args:
-            return await self._reply_text(update, "⚠️ /on <имя>")
+            return await self._reply_text(update, t(uid, "usage_on"))
         name = " ".join(context.args)
         eid = await self._resolve_or_suggest(update, uid, name, "on")
         if not eid:
@@ -1099,7 +1165,7 @@ class HATelegramBot:
             return
         uid = self._uid(update)
         if not context.args:
-            return await self._reply_text(update, "⚠️ /off <имя>")
+            return await self._reply_text(update, t(uid, "usage_off"))
         name = " ".join(context.args)
         eid = await self._resolve_or_suggest(update, uid, name, "off")
         if not eid:
@@ -1117,7 +1183,7 @@ class HATelegramBot:
             return
         uid = self._uid(update)
         if not context.args:
-            return await self._reply_text(update, "⚠️ /toggle <имя>")
+            return await self._reply_text(update, t(uid, "usage_toggle"))
         name = " ".join(context.args)
         eid = await self._resolve_or_suggest(update, uid, name, "tg")
         if not eid:
@@ -1211,7 +1277,7 @@ class HATelegramBot:
             return
         uid = self._uid(update)
         if not context.args:
-            return await self._reply_text(update, "⚠️ /room <комната>")
+            return await self._reply_text(update, t(uid, "usage_room"))
         room_name = " ".join(context.args)
         await self._show_room(update, uid, room_name)
 
@@ -1221,7 +1287,7 @@ class HATelegramBot:
             return
         uid = self._uid(update)
         if not context.args:
-            return await self._reply_text(update, "⚠️ /scene <имя>")
+            return await self._reply_text(update, t(uid, "usage_scene"))
         name = " ".join(context.args)
         eid = self.registry.by_id_or_alias(name)
         if not eid or not eid.startswith("scene."):
@@ -1298,7 +1364,7 @@ class HATelegramBot:
         marker = secrets.token_hex(4)
         text = f"{t(None, 'testnotify_text')} [{marker}]"
         future = asyncio.get_running_loop().create_future()
-        self._pending_roundtrip = {"marker": marker, "future": future}
+        self._pending_roundtrips[marker] = future
         start = time.time()
         try:
             try:
@@ -1313,7 +1379,7 @@ class HATelegramBot:
             return {"ok": True, "secs": time.time() - start,
                     "sent": result.get("sent", 0)}
         finally:
-            self._pending_roundtrip = None
+            self._pending_roundtrips.pop(marker, None)
 
     async def _testnotify_roundtrip(self, update: Update, uid: Optional[int], service: str):
         """Полный круг: бот -> HA (rest_command) -> бот (/notify) -> Telegram."""
@@ -1377,13 +1443,13 @@ class HATelegramBot:
             return
         uid = self._uid(update)
         if len(context.args) < 2:
-            return await self._reply_text(update, "⚠️ /timer <мин> <имя>")
+            return await self._reply_text(update, t(uid, "usage_timer"))
         try:
             minutes = int(context.args[0])
             if minutes <= 0 or minutes > 24 * 60:
                 raise ValueError
         except ValueError:
-            return await self._reply_text(update, "⚠️ Время должно быть числом от 1 до 1440")
+            return await self._reply_text(update, t(uid, "timer_bad_minutes"))
         name = " ".join(context.args[1:])
         eid = await self._resolve_or_suggest(update, uid, name, "off")
         if not eid:
@@ -1679,7 +1745,7 @@ class HATelegramBot:
         lines = []
         buttons = []
         for eid in eids:
-            data = self.registry._entities.get(eid, {})
+            data = self.registry.get_cached(eid)
             lines.append(self._device_line(uid, eid, data))
             if eid.split(".")[0] in CONTROLLABLE_DOMAINS:
                 fname = self.registry.get_friendly_name(eid)
@@ -1924,7 +1990,7 @@ class HATelegramBot:
             return
         lines = []
         for eid in entities:
-            data = self.registry._entities.get(eid, {})
+            data = self.registry.get_cached(eid)
             lines.append(self._device_line(uid, eid, data))
         title_key = "all_devices_title" if domain is None else "devices_of_type_title"
         title = t(uid, title_key, domain=esc(domain)) if domain else t(uid, title_key)
@@ -2082,10 +2148,12 @@ class HATelegramBot:
                 logger.warning("Не удалось отправить уведомление в %s: %s", cid, e)
                 failed += 1
 
-        # Колбэк для полного круга /testnotify <rest_command>
-        pending = self._pending_roundtrip
-        if pending and not pending["future"].done() and pending["marker"] in text:
-            pending["future"].set_result({"sent": sent, "failed": failed})
+        # Колбэки для полного круга /testnotify <rest_command>: завершаем
+        # все ожидания, чей маркер встретился в тексте (их может быть
+        # несколько — от параллельных проверок разных пользователей)
+        for marker, future in list(self._pending_roundtrips.items()):
+            if not future.done() and marker in text:
+                future.set_result({"sent": sent, "failed": failed})
 
         return web.json_response({"ok": True, "sent": sent, "failed": failed})
 
@@ -2220,13 +2288,37 @@ def parse_allowed_users() -> Optional[set]:
     return None  # доступ открыт всем — НЕ рекомендуется
 
 
+def migrate_legacy_data_files():
+    """Переносит data-файлы из корня проекта (формат до 2.1.6) в DATA_DIR."""
+    if DATA_DIR.resolve() == SCRIPT_DIR.resolve():
+        return  # DATA_DIR — корень проекта: переносить нечего
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for name in ("user_langs.json", "timers.json"):
+        legacy = SCRIPT_DIR / name
+        if not legacy.exists():
+            continue
+        target = DATA_DIR / name
+        if target.exists():
+            logger.warning(
+                "Не переношу %s: в %s уже есть %s — оставляю оба, "
+                "актуальным считается %s", legacy, DATA_DIR, name, target
+            )
+            continue
+        try:
+            legacy.replace(target)
+            logger.info("Перенесён %s → %s", legacy, target)
+        except Exception as e:
+            logger.warning("Не удалось перенести %s: %s", legacy, e)
+
+
 def main():
     """Точка входа: настройка и запуск бота."""
-    try:
-        ha_timeout = int(os.environ.get("HA_TIMEOUT") or 15)
-    except ValueError:
-        logger.warning("Неверный HA_TIMEOUT=%r, использую 15", os.environ.get("HA_TIMEOUT"))
-        ha_timeout = 15
+    migrate_legacy_data_files()
+    # USER_LANGS загружается при импорте модуля — после миграции перечитываем
+    USER_LANGS.clear()
+    USER_LANGS.update(load_user_langs())
+
+    ha_timeout = parse_int_env("HA_TIMEOUT", 15)
     cfg = Config(
         token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         base_url=os.environ.get("HA_BASE_URL", "http://localhost:8123"),
@@ -2234,7 +2326,7 @@ def main():
         allowed_users=parse_allowed_users(),
         timeout=ha_timeout,
         notify_host=os.environ.get("NOTIFY_HOST", "0.0.0.0"),
-        notify_port=int(os.environ.get("NOTIFY_PORT") or 0),
+        notify_port=parse_int_env("NOTIFY_PORT", 0),
         notify_token=os.environ.get("NOTIFY_TOKEN") or None,
         notify_watchdog_interval=WATCHDOG_INTERVAL,
         notify_watchdog_command=WATCHDOG_COMMAND,
