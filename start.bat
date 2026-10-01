@@ -38,9 +38,16 @@ if errorlevel 1 (
 
 findstr /R /C:"^ALLOWED_USER" .env | findstr /R "=[0-9]" >nul
 if errorlevel 1 (
-    echo [WARNING] Не заданы ALLOWED_USER_IDS - доступ к боту разрешён ВСЕМ!
-    echo Рекомендуется указать Telegram ID в .env
-    echo.
+    findstr /R /C:"^ALLOW_ALL_USERS=1" .env >nul
+    if errorlevel 1 (
+        echo [ОШИБКА] Не заданы ALLOWED_USER_IDS - бот не запустится!
+        echo Укажите Telegram ID в .env или явно разрешите открытый доступ: ALLOW_ALL_USERS=1
+        pause
+        exit /b 1
+    ) else (
+        echo [WARNING] ALLOWED_USER_IDS не задан, ALLOW_ALL_USERS=1 - доступ к боту разрешён ВСЕМ!
+        echo.
+    )
 )
 
 if not exist logs mkdir logs

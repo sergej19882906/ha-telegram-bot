@@ -4,8 +4,17 @@
 #   git pull -> зависимости -> перезапуск службы -> хвост лога
 #
 # Использование:
-#   ./deploy.sh            # полное обновление (код + зависимости + рестарт)
-#   ./deploy.sh --no-deps  # только код и рестарт (быстрее)
+#   ./deploy.sh              # полное обновление (код + зависимости + рестарт)
+#   ./deploy.sh --no-deps    # только код и рестарт (быстрее)
+#   ./deploy.sh --docker     # после обновления собрать Docker-образ
+#                            # (linux/amd64 + linux/arm64 через buildx)
+#
+# Docker-сборка:
+#   ./deploy.sh --docker                  # собрать в локальный docker buildx
+#   DOCKER_REGISTRY=user/repo ./deploy.sh --docker
+#                                       # собрать и запушить обе платформы
+#   Переменные: DOCKER_IMAGE (тег, по умолчанию ha-telegram-bot:latest),
+#               DOCKER_REGISTRY (registry/namespace; при задании — push).
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -49,6 +58,38 @@ if [ "$1" != "--no-deps" ]; then
     fi
 else
     echo -e "${BLUE}[INFO] Пропускаю зависимости (--no-deps)${NC}"
+fi
+
+# --- Docker-образ (опционально): multi-arch сборка через buildx ---
+if [ "$1" == "--docker" ] || [ "$2" == "--docker" ]; then
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}[ОШИБКА] docker не найден — не могу собрать образ.${NC}"
+        exit 1
+    fi
+
+    BOT_VERSION=$(sed -n 's/^BOT_VERSION *= *"\([^"]*\)"/\1/p' hamqttbot/config.py)
+    IMAGE="${DOCKER_IMAGE:-ha-telegram-bot:latest}"
+    PLATFORMS="linux/amd64,linux/arm64"
+
+    echo -e "${BLUE}[INFO] Собираю Docker-образ ${IMAGE} (v${BOT_VERSION}, ${PLATFORMS})...${NC}"
+
+    if [ -n "$DOCKER_REGISTRY" ]; then
+        IMAGE="${DOCKER_REGISTRY%/}/${IMAGE}"
+        echo -e "${BLUE}[INFO] Пушу в ${IMAGE}...${NC}"
+        docker buildx build --platform "$PLATFORMS" \
+            --build-arg "BOT_VERSION=${BOT_VERSION}" \
+            -t "$IMAGE" --push . \
+            || { echo -e "${RED}[ОШИБКА] Сборка/пуш образа не выполнена.${NC}"; exit 1; }
+    else
+        docker buildx build --platform "$PLATFORMS" \
+            --build-arg "BOT_VERSION=${BOT_VERSION}" \
+            -t "$IMAGE" --load . \
+            || { echo -e "${RED}[ОШИБКА] Сборка образа не выполнена.${NC}"; exit 1; }
+        echo -e "${YELLOW}[WARNING] DOCKER_REGISTRY не задан — образ собран локально, без пуша${NC}"
+    fi
+
+    echo -e "${GREEN}✅ Docker-образ готов: ${IMAGE}${NC}"
+    echo
 fi
 
 # --- Перезапуск ---

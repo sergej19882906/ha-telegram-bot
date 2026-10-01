@@ -40,8 +40,13 @@ fi
 
 # Предупреждение, если не задан список разрешённых пользователей
 if ! grep -qE '^(ALLOWED_USER_IDS|ALLOWED_USER_ID)=.' .env; then
-    echo -e "${YELLOW}[WARNING] Не заданы ALLOWED_USER_IDS — доступ к боту разрешён ВСЕМ!${NC}"
-    echo -e "${YELLOW}Рекомендуется указать Telegram ID в .env${NC}"
+    if grep -qE '^ALLOW_ALL_USERS=1' .env; then
+        echo -e "${YELLOW}[WARNING] ALLOWED_USER_IDS не задан, ALLOW_ALL_USERS=1 — доступ к боту разрешён ВСЕМ!${NC}"
+    else
+        echo -e "${RED}[ОШИБКА] Не заданы ALLOWED_USER_IDS — бот не запустится!${NC}"
+        echo -e "${YELLOW}Укажите Telegram ID в .env или явно разрешите открытый доступ: ALLOW_ALL_USERS=1${NC}"
+        exit 1
+    fi
     echo
 fi
 

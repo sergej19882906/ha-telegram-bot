@@ -9,10 +9,20 @@
 ```
 ha-telegram-bot/
 │
-├── 📄 bot.py                    # Основной код бота (вся логика в одном файле)
-├── 📄 requirements.txt          # Зависимости Python
+├── 📄 bot.py                    # Точка входа: main(), регистрация хендлеров, запуск polling
+├── 📦 hamqttbot/                # Пакет с логикой бота (бывший монолитный bot.py)
+│   ├── __init__.py              # Re-export имён пакета (обратная совместимость: import bot)
+│   ├── config.py                # Логирование, Config, parse_int_env/parse_allowed_users, константы
+│   ├── storage.py               # Файлы данных в data/ (языки, чаты), миграция legacy-файлов
+│   ├── messages.py              # Локализация MESSAGES (ru/en), t(), esc()
+│   ├── ha_client.py             # HAClient: REST-вызовы к Home Assistant (httpx)
+│   ├── registry.py              # EntityRegistry: кеш устройств, алиасы, комнаты, сцены
+│   └── bot_core.py              # HATelegramBot: команды, меню, таймеры, приёмник уведомлений
+├── 📄 requirements.txt          # Зависимости Python (диапазоны, для разработки)
+├── 📄 requirements.lock         # Точные версии для воспроизводимой сборки Docker-образа
+├── 📄 healthcheck.py            # Проверка жизнеспособности контейнера (HTTP /notify или PID 1)
 ├── 🧪 tests/test_smoke.py       # Постоянные тесты (unittest, без внешних зависимостей)
-├── 📄 Dockerfile                # Сборка Docker-образа
+├── 📄 Dockerfile                # Сборка Docker-образа (multi-arch: amd64 + arm64)
 ├── 📄 docker-compose.yml        # Запуск через Docker Compose
 ├── 📄 .dockerignore             # Исключения из build-контекста
 ├── 📄 .gitignore                # Исключения для git
@@ -26,7 +36,7 @@ ha-telegram-bot/
 │   ├── stop.sh                  # Мягкая остановка (сохраняет таймеры)
 │   ├── install_service.sh       # Установка systemd-службы
 │   ├── uninstall_service.sh     # Удаление systemd-службы
-│   └── deploy.sh                # Обновление на сервере: git pull + зависимости + рестарт + лог
+│   └── deploy.sh                # Обновление: git pull + зависимости + рестарт + лог (--docker: multi-arch образ)
 │
 ├── 🪟 Windows-скрипты (.bat)
 │   ├── install.bat              # Установка: venv + зависимости + .env
@@ -62,15 +72,23 @@ ha-telegram-bot/
 
 ## Назначение компонентов
 
-### `bot.py` — ядро
+### `bot.py` и пакет `hamqttbot/` — ядро
 
-| Класс / раздел | Назначение |
-|---|---|
-| `MESSAGES` | Локализация (ru/en) |
-| `HAClient` | Асинхронный клиент REST API Home Assistant (httpx) |
-| `EntityRegistry` | Кеш устройств, алиасы, поиск, комнаты (area_registry), сцены |
-| `HATelegramBot` | Все команды, inline-меню, таймеры, приёмник уведомлений |
-| `Config` / `parse_allowed_users()` | Конфигурация из переменных окружения |
+`bot.py` — тонкая точка входа: `main()`, сборка `Config` из окружения, регистрация
+хендлеров PTB, post_init/post_shutdown, запуск polling. Вся логика — в пакете
+`hamqttbot/` (зависимости текут в одну сторону: config/storage → ha_client/registry → bot_core → bot.py).
+
+| Модуль | Класс / раздел | Назначение |
+|---|---|---|
+| `hamqttbot/messages.py` | `MESSAGES`, `t()` | Локализация (ru/en) |
+| `hamqttbot/config.py` | `Config` / `parse_allowed_users()` | Конфигурация из переменных окружения |
+| `hamqttbot/storage.py` | `USER_LANGS`, load/save, `migrate_legacy_data_files()` | Файлы данных в data/ |
+| `hamqttbot/ha_client.py` | `HAClient` | Асинхронный клиент REST API Home Assistant (httpx) |
+| `hamqttbot/registry.py` | `EntityRegistry` | Кеш устройств, алиасы, поиск, комнаты (area_registry), сцены |
+| `hamqttbot/bot_core.py` | `HATelegramBot` | Все команды, inline-меню, таймеры, приёмник уведомлений |
+
+`import bot` продолжает работать: bot.py реэкспортирует имена из пакета
+(`bot.Config`, `bot.HATelegramBot`, `bot.MESSAGES`, `bot.TIMERS_FILE` и т.д.).
 
 ### Конфигурация (`.env`, шаблон — `.env.example`)
 
@@ -136,4 +154,4 @@ bot.py ──> data/timers.json       (таймеры: при каждом из�
 
 ---
 
-*Актуально на сентябрь 2026 года. Версия 2.1.6*
+*Актуально на сентябрь 2026 года. Версия 3.0.0*

@@ -1,0 +1,88 @@
+"""Пакет HA Telegram Bot (логика бывшего монолитного bot.py).
+
+bot.py в корне проекта — тонкая точка входа: main() и re-export
+имён из пакета для обратной совместимости (import bot).
+"""
+
+from .config import (
+    BOT_VERSION,
+    BRIGHTNESS_PRESETS,
+    ALLOFF_DOMAINS,
+    CB_TOKEN_EVICT,
+    CB_TOKEN_MAP_MAX,
+    CONTROLLABLE_DOMAINS,
+    DEFAULT_LANG,
+    HA_RETRY_ATTEMPTS,
+    HA_RETRY_BASE_DELAY,
+    REFRESH_INTERVAL,
+    ROOM_ATTRS,
+    TEMP_RANGE,
+    WATCHDOG_COMMAND,
+    WATCHDOG_INTERVAL,
+    Config,
+    logger,
+    parse_allowed_users,
+    parse_int_env,
+    require_allowed_users,
+)
+from .storage import (
+    CHATS_FILE,
+    DATA_DIR,
+    LANG_FILE,
+    SCRIPT_DIR,
+    TIMERS_FILE,
+    USER_LANGS,
+    load_known_chats,
+    load_user_langs,
+    migrate_legacy_data_files,
+    save_known_chats,
+    save_user_langs,
+)
+from .messages import MESSAGES, esc, get_lang, set_lang, state_localized, t
+from .ha_client import HAClient, HAError
+from .registry import EntityRegistry
+from .bot_core import HATelegramBot, get_main_keyboard
+
+__all__ = [
+    "BOT_VERSION",
+    "BRIGHTNESS_PRESETS",
+    "ALLOFF_DOMAINS",
+    "CB_TOKEN_EVICT",
+    "CB_TOKEN_MAP_MAX",
+    "CHATS_FILE",
+    "CONTROLLABLE_DOMAINS",
+    "Config",
+    "DATA_DIR",
+    "DEFAULT_LANG",
+    "EntityRegistry",
+    "esc",
+    "get_lang",
+    "get_main_keyboard",
+    "HAClient",
+    "HAError",
+    "HA_RETRY_ATTEMPTS",
+    "HA_RETRY_BASE_DELAY",
+    "HATelegramBot",
+    "LANG_FILE",
+    "load_known_chats",
+    "load_user_langs",
+    "logger",
+    "MESSAGES",
+    "migrate_legacy_data_files",
+    "parse_allowed_users",
+    "parse_int_env",
+    "REFRESH_INTERVAL",
+    "require_allowed_users",
+    "ROOM_ATTRS",
+    "save_known_chats",
+    "save_user_langs",
+    "SCRIPT_DIR",
+    "set_lang",
+    "state_localized",
+    "t",
+    "TEMP_RANGE",
+    "TIMERS_FILE",
+    "USER_LANGS",
+    "WATCHDOG_COMMAND",
+    "WATCHDOG_INTERVAL",
+]

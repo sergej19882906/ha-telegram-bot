@@ -436,6 +436,7 @@ class TestRegistriesWS(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.rest_hits, 3)
         self.assertEqual(self.ws_hits, 0)
         self.assertFalse(reg._rest_registries_gone)
+        await reg.close()
         await reg.ha.close()
 
     async def test_404_falls_back_to_ws_once(self):
@@ -455,6 +456,7 @@ class TestRegistriesWS(unittest.IsolatedAsyncioTestCase):
         await reg._load_area_map()
         self.assertEqual(reg._area_names, {"kitchen": "Кухня"})
         self.assertEqual(reg._area_entities, {"kitchen": ["light.k"]})
+        await reg.close()
         await reg.ha.close()
 
     async def test_warning_dedupe(self):
@@ -477,6 +479,7 @@ class TestRegistriesWS(unittest.IsolatedAsyncioTestCase):
         warnings = [m for m in records if "Реестры комнат недоступны" in m]
         self.assertEqual(len(warnings), 1)
         self.assertTrue(reg._area_warned)
+        await reg.close()
         await reg.ha.close()
 
 

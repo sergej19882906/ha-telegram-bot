@@ -82,7 +82,7 @@ HA_BASE_URL=http://192.168.1.100:8123
 HA_ACCESS_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 # Разрешённые пользователи — Telegram ID через запятую
-# ВНИМАНИЕ: если не задать, доступ к боту будет разрешён ВСЕМ!
+# Бот НЕ СТАРТУЕТ без списка! Открытый доступ всем — только через ALLOW_ALL_USERS=1
 ALLOWED_USER_IDS=123456789
 
 # Язык по умолчанию: ru или en

@@ -10,6 +10,7 @@
 - [Готовый образ из GHCR](#-готовый-образ-из-github-container-registry-без-сборки)
 - [Вариант 1: docker run](#-вариант-1-docker-run-сборка-из-исходников)
 - [Вариант 2: docker-compose](#-вариант-2-docker-compose-рекомендуется)
+- [Сборка под ARM (Raspberry Pi, Orange Pi)](#-сборка-под-arm-raspberry-pi-orange-pi)
 - [Настройка .env](#-настройка-env)
 - [Уведомления из Home Assistant](#-уведомления-из-home-assistant)
 - [Логи и мониторинг](#-логи-и-мониторинг)
@@ -45,7 +46,7 @@ HA_BASE_URL=http://192.168.1.100:8123
 HA_ACCESS_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 # Разрешённые пользователи — Telegram ID через запятую
-# ВНИМАНИЕ: если не задать, доступ к боту будет разрешён ВСЕМ!
+# Бот НЕ СТАРТУЕТ без списка! Открытый доступ всем — только через ALLOW_ALL_USERS=1
 ALLOWED_USER_IDS=123456789
 
 # Язык по умолчанию: ru или en
@@ -156,6 +157,48 @@ docker compose restart        # перезапуск
 docker compose down           # остановка
 docker compose up -d --build  # пересборка после обновления кода
 ```
+
+---
+
+## 🍓 Сборка под ARM (Raspberry Pi, Orange Pi)
+
+Базовый образ `python:3.11-slim` мультиархитектурный — бот работает на
+`linux/amd64` и `linux/arm64` (Raspberry Pi 3/4/5, Orange Pi и другие
+ARM-платы). Зависимости чисто Python — ничего нативно компилировать не нужно.
+
+### Сборка для конкретной платформы (например, прямо на Raspberry Pi)
+
+```bash
+docker build -t ha-telegram-bot .
+```
+
+На ARM-плате docker сам возьмёт ARM-слой базового образа — отдельных
+флагов не требуется.
+
+### Сборка для обеих платформ сразу (buildx)
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t ha-telegram-bot:latest .
+```
+
+Чтобы собрать **и опубликовать** multi-arch образ в registry:
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/<user>/ha-telegram-bot:latest \
+  --push .
+```
+
+Готовый manifest поддерживает обе платформы: ARM-устройство сделает
+`docker pull` и автоматически вытянет нужный слой — выбирать платформу
+вручную не нужно.
+
+> 💡 В репозитории есть `./deploy.sh --docker` — он обновляет код и собирает
+> образ сразу для обеих платформ; с переменной `DOCKER_REGISTRY=user/repo`
+> образ ещё и публикуется.
 
 ---
 
