@@ -10,8 +10,10 @@ import logging
 import os
 import time
 import unittest
+from unittest.mock import patch
 
 from tests.test_smoke import make_bot  # noqa: E402  (общий хелпер, DATA_DIR уже задан)
+from hamqttbot.config import parse_notify_watchdog_interval  # noqa: E402
 
 import bot  # noqa: E402
 
@@ -116,6 +118,39 @@ class TestRequireAllowedUsers:
     def test_allow_all_does_not_override_list(self):
         with patched_env(ALLOWED_USER_IDS="7", ALLOW_ALL_USERS="1"):
             assert bot.require_allowed_users() == {7}
+
+
+class TestNotifyConfiguration(unittest.TestCase):
+    def test_watchdog_zero_disables_it(self):
+        with patch.dict(os.environ, {"NOTIFY_WATCHDOG_INTERVAL": "0"}):
+            assert parse_notify_watchdog_interval() == 0
+
+    def test_watchdog_nonzero_interval_has_minimum(self):
+        with patch.dict(os.environ, {"NOTIFY_WATCHDOG_INTERVAL": "30"}):
+            assert parse_notify_watchdog_interval() == 60
+        with patch.dict(os.environ, {"NOTIFY_WATCHDOG_INTERVAL": "120"}):
+            assert parse_notify_watchdog_interval() == 120
+
+    def test_invalid_watchdog_interval_defaults_to_disabled(self):
+        with patch.dict(os.environ, {"NOTIFY_WATCHDOG_INTERVAL": "invalid"}):
+            assert parse_notify_watchdog_interval() == 0
+
+    def test_notify_token_required_when_receiver_enabled(self):
+        with self.assertRaisesRegex(SystemExit, "NOTIFY_TOKEN обязателен"):
+            bot.validate_notify_config(8099, None)
+        with self.assertRaisesRegex(SystemExit, "NOTIFY_TOKEN обязателен"):
+            bot.validate_notify_config(8099, "   ")
+
+    def test_receiver_can_be_disabled_without_token(self):
+        bot.validate_notify_config(0, None)
+
+    def test_notify_port_range(self):
+        bot.validate_notify_config(65535, "secret")
+        for port in (-1, 65536):
+            with self.subTest(port=port), self.assertRaisesRegex(
+                SystemExit, "NOTIFY_PORT"
+            ):
+                bot.validate_notify_config(port, "secret")
 
 
 class TestCheckAuth:

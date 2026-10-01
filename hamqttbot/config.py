@@ -7,7 +7,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-BOT_VERSION = "3.0.0"
+BOT_VERSION = "3.0.1"
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -36,8 +36,14 @@ DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "ru")
 # Интервал обновления реестра устройств из HA, секунды (минимум 15)
 REFRESH_INTERVAL = parse_int_env("REFRESH_INTERVAL", 60, min_val=15)
 
+def parse_notify_watchdog_interval() -> int:
+    """Читает интервал watchdog: 0 выключает его, ненулевое значение >= 60."""
+    interval = parse_int_env("NOTIFY_WATCHDOG_INTERVAL", 0)
+    return max(60, interval) if interval else 0
+
+
 # Интервал автопроверки цепочки уведомлений, секунды (0 = выключено; минимум 60)
-WATCHDOG_INTERVAL = parse_int_env("NOTIFY_WATCHDOG_INTERVAL", 0, min_val=60)
+WATCHDOG_INTERVAL = parse_notify_watchdog_interval()
 # Имя rest_command в HA для прогона проверки (обязательно при интервале > 0)
 WATCHDOG_COMMAND = os.environ.get("NOTIFY_WATCHDOG_COMMAND") or None
 
@@ -79,6 +85,17 @@ class Config:
     notify_token: Optional[str] = None
     notify_watchdog_interval: int = 0  # 0 = сторож уведомлений выключен
     notify_watchdog_command: Optional[str] = None  # rest_command для проверки
+
+
+def validate_notify_config(port: int, token: Optional[str]) -> None:
+    """Проверяет диапазон порта и защищает включённый приёмник токеном."""
+    if not 0 <= port <= 65535:
+        raise SystemExit("NOTIFY_PORT должен быть числом от 0 до 65535.")
+    if port > 0 and not (token and token.strip()):
+        raise SystemExit(
+            "NOTIFY_TOKEN обязателен, если NOTIFY_PORT включён. "
+            "Задайте длинный случайный токен или установите NOTIFY_PORT=0."
+        )
 
 
 def parse_allowed_users() -> Optional[set]:

@@ -21,9 +21,12 @@ ha-telegram-bot/
 ├── 📄 requirements.txt          # Зависимости Python (диапазоны, для разработки)
 ├── 📄 requirements.lock         # Точные версии для воспроизводимой сборки Docker-образа
 ├── 📄 healthcheck.py            # Проверка жизнеспособности контейнера (HTTP /notify или PID 1)
-├── 🧪 tests/test_smoke.py       # Постоянные тесты (unittest, без внешних зависимостей)
+├── 🧪 tests/                    # Постоянные unittest-тесты
+│   ├── test_smoke.py            # Базовые сценарии
+│   └── test_improvements.py     # Регрессии и проверки улучшений
 ├── 📄 Dockerfile                # Сборка Docker-образа (multi-arch: amd64 + arm64)
 ├── 📄 docker-compose.yml        # Запуск через Docker Compose
+├── 📄 docker-compose.notify.yml # Дополнительная публикация порта HTTP-приёмника
 ├── 📄 .dockerignore             # Исключения из build-контекста
 ├── 📄 .gitignore                # Исключения для git
 ├── 📄 .env.example              # Шаблон конфигурации (копируется в .env)
@@ -101,7 +104,7 @@ ha-telegram-bot/
 | `DEFAULT_LANG` | ➖ | Язык по умолчанию (`ru`/`en`) |
 | `NOTIFY_PORT` | ➖ | Порт приёмника уведомлений (`0` = выкл) |
 | `NOTIFY_HOST` | ➖ | Интерфейс приёмника |
-| `NOTIFY_TOKEN` | ⚠️ при NOTIFY_PORT≠0 | Авторизация приёмника |
+| `NOTIFY_TOKEN` | ⚠️ при NOTIFY_PORT≠0 | Обязательная авторизация приёмника |
 | `NOTIFY_WATCHDOG_INTERVAL` | ➖ | Интервал сторожа уведомлений, сек (мин. 60, 0 = выкл) |
 | `NOTIFY_WATCHDOG_COMMAND` | ⚠️ при заданном интервале | rest_command HA для проверки цепочки |
 | `HA_TIMEOUT` | ➖ | Таймаут запросов к HA, сек (по умолчанию 15) |

@@ -57,11 +57,17 @@ Telegram-бот для Home Assistant с интерактивным меню и 
   одна переиспользуемая aiohttp-сессия для websocket-фолбэка
 - Docker: multi-arch образы (linux/amd64 + linux/arm64) через buildx
   (./deploy.sh --docker), версия передаётся build-arg BOT_VERSION,
-  зависимости из requirements.lock, healthcheck.py (проверка /notify),
-  порт приёмника в compose публикуется только при заданном NOTIFY_PORT
+  зависимости из requirements.lock, healthcheck.py (проверка /notify)
 - Мелочи: разбивка сообщений не рвёт HTML, t() падает на ru-строку,
   температура с единицей (°C), secrets.compare_digest для NOTIFY_TOKEN,
   публичный EntityRegistry.count()
+
+Версия 3.0.1:
+- NOTIFY_WATCHDOG_INTERVAL=0 действительно выключает сторож
+- HTTP-приёмник требует NOTIFY_TOKEN; порт проверяется на диапазон 0–65535
+- Docker Compose не публикует порт по умолчанию; отдельный override включает
+  публикацию на том же порту, который слушает бот
+- Docker-релиз со стабильного Git-тега публикует multi-arch образ и тег latest
 
 Версия 2.1.6:
 - Одновременные /testnotify <rest_command> больше не перезаписывают друг друга:
@@ -99,7 +105,7 @@ from telegram.ext import (
 # Имена ниже реэкспортируются для обратной совместимости:
 # тесты и сторонний код используют `import bot` и обращаются к bot.Config,
 # bot.HATelegramBot, bot.MESSAGES, bot.TIMERS_FILE и т.д.
-from hamqttbot import (  # noqa: F401
+from hamqttbot import (  # noqa: F401  # pylint: disable=unused-import
     BOT_VERSION,
     MESSAGES,
     USER_LANGS,
@@ -121,6 +127,7 @@ from hamqttbot import (  # noqa: F401
     migrate_legacy_data_files,
     parse_allowed_users,
     parse_int_env,
+    validate_notify_config,
     require_allowed_users,
     save_known_chats,
     save_user_langs,
@@ -148,14 +155,13 @@ def main():
         timeout=ha_timeout,
         notify_host=os.environ.get("NOTIFY_HOST", "0.0.0.0"),
         notify_port=parse_int_env("NOTIFY_PORT", 0),
-        notify_token=os.environ.get("NOTIFY_TOKEN") or None,
+        notify_token=(os.environ.get("NOTIFY_TOKEN") or "").strip() or None,
         notify_watchdog_interval=WATCHDOG_INTERVAL,
         notify_watchdog_command=WATCHDOG_COMMAND,
     )
+    validate_notify_config(cfg.notify_port, cfg.notify_token)
     if not cfg.token or not cfg.ha_token:
         raise SystemExit("Не заданы TELEGRAM_BOT_TOKEN и HA_ACCESS_TOKEN в файле .env")
-    if cfg.notify_port and not cfg.notify_token:
-        logger.warning("NOTIFY_TOKEN не задан — приёмник уведомлений доступен без авторизации!")
     if cfg.notify_watchdog_interval and not cfg.notify_watchdog_command:
         logger.warning("NOTIFY_WATCHDOG_INTERVAL задан без NOTIFY_WATCHDOG_COMMAND — сторож выключен")
 

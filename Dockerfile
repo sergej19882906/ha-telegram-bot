@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 # Версия бота берётся из hamqttbot/config.py и передаётся сборкой:
 #   --build-arg BOT_VERSION=$(grep -oP 'BOT_VERSION\s*=\s*"\K[^"]+' hamqttbot/config.py)
-ARG BOT_VERSION=3.0.0
+ARG BOT_VERSION=3.0.1
 
 LABEL maintainer="sergej19882906"
 LABEL description="Telegram bot for Home Assistant with notifications receiver"

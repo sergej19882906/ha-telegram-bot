@@ -23,7 +23,9 @@ from .config import (
     logger,
     parse_allowed_users,
     parse_int_env,
+    parse_notify_watchdog_interval,
     require_allowed_users,
+    validate_notify_config,
 )
 from .storage import (
     CHATS_FILE,
@@ -71,6 +73,7 @@ __all__ = [
     "migrate_legacy_data_files",
     "parse_allowed_users",
     "parse_int_env",
+    "parse_notify_watchdog_interval",
     "REFRESH_INTERVAL",
     "require_allowed_users",
     "ROOM_ATTRS",
@@ -83,6 +86,7 @@ __all__ = [
     "TEMP_RANGE",
     "TIMERS_FILE",
     "USER_LANGS",
+    "validate_notify_config",
     "WATCHDOG_COMMAND",
     "WATCHDOG_INTERVAL",
 ]

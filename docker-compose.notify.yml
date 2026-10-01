@@ -1,0 +1,4 @@
+services:
+  ha-telegram-bot:
+    ports:
+      - "${NOTIFY_PORT:?Set a positive NOTIFY_PORT in .env}:${NOTIFY_PORT:?Set a positive NOTIFY_PORT in .env}"

@@ -64,7 +64,8 @@ NOTIFY_TOKEN=длинная_случайная_строка
 
 ## 📥 Готовый образ из GitHub Container Registry (без сборки)
 
-После каждого релиза образ публикуется автоматически в GHCR:
+После каждого релиза образ публикуется автоматически в GHCR с версионными
+тегами и тегом `latest`:
 
 ```bash
 docker pull ghcr.io/sergej19882906/ha-telegram-bot:latest
@@ -78,7 +79,12 @@ docker run -d \
   ghcr.io/sergej19882906/ha-telegram-bot:latest
 ```
 
-> 💡 Образ в GHCR публичный — `docker login` не требуется. Тег `latest` соответствует последнему релизу; конкретную версию можно взять по тегу, например `:2.1`.
+> 💡 Образ в GHCR публичный — `docker login` не требуется. Тег `latest` соответствует последнему релизу; конкретную версию можно взять по тегу, например `:3.0.1`.
+
+Публикуйте порт только при включённом приёмнике (`NOTIFY_PORT=8099` и
+заданный `NOTIFY_TOKEN`). Для другого порта, например `9000`, задайте
+`NOTIFY_PORT=9000` и используйте `-p 9000:9000`. При `NOTIFY_PORT=0`
+не добавляйте `-p`.
 
 ---
 
@@ -112,7 +118,7 @@ docker run -d \
 | `--restart unless-stopped` | автоперезапуск при сбоях и после перезагрузки хоста |
 | `--env-file .env` | переменные окружения из файла |
 | `-v ha_bot_data:/app/data` | том с данными (языки пользователей, таймеры) |
-| `-p 8099:8099` | порт приёмника уведомлений (не указывайте, если `NOTIFY_PORT=0`) |
+| `-p 8099:8099` | порт приёмника уведомлений; внутренний и внешний порты должны совпадать с `NOTIFY_PORT` |
 
 ### Шаг 3: Проверьте, что бот запустился
 
@@ -126,7 +132,9 @@ docker logs -f ha-telegram-bot
 
 ## 🚀 Вариант 2: docker-compose (рекомендуется)
 
-В репозитории уже есть готовый `docker-compose.yml` (сборка из исходников):
+По умолчанию `docker-compose.yml` не публикует порт уведомлений. Для включения
+приёмника задайте в `.env` `NOTIFY_PORT=8099` и длинный случайный
+`NOTIFY_TOKEN`, затем добавьте файл `docker-compose.notify.yml`:
 
 ```yaml
 services:
@@ -138,12 +146,24 @@ services:
     env_file: .env
     volumes:
       - ha_bot_data:/app/data
-    ports:
-      - "8099:8099"   # приёмник уведомлений; удалите строку, если NOTIFY_PORT=0
-
 volumes:
   ha_bot_data:
 ```
+
+Запуск без опубликованного порта:
+
+```bash
+docker compose up -d
+```
+
+Запуск с HTTP-приёмником на порту из `NOTIFY_PORT`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.notify.yml up -d
+```
+
+Для порта `9000` задайте `NOTIFY_PORT=9000` в `.env`; Compose опубликует
+`9000:9000`. Не используйте файл override при `NOTIFY_PORT=0`.
 
 > 💡 Чтобы использовать готовый образ вместо сборки, замените `build: .` на
 > `image: ghcr.io/sergej19882906/ha-telegram-bot:latest`.
@@ -204,7 +224,8 @@ docker buildx build \
 
 ## 🚨 Уведомления из Home Assistant
 
-Когда контейнер запущен с `-p 8099:8099`, в `configuration.yaml` HA добавьте:
+Когда приёмник включён и порт опубликован (например, `8099:8099`), в
+`configuration.yaml` HA добавьте:
 
 ```yaml
 rest_command:
@@ -221,6 +242,8 @@ rest_command:
 Если Home Assistant тоже работает в Docker на том же хосте, используйте IP хоста или `host.docker.internal` (Docker Desktop) — адрес `localhost` внутри контейнера HA указывает на сам контейнер HA.
 
 Подробности и примеры автоматизаций — в [README.md](README.md), раздел «Уведомления из Home Assistant».
+
+Без `NOTIFY_TOKEN` бот завершит запуск с ошибкой, если `NOTIFY_PORT` больше 0.
 
 ---
 
